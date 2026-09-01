@@ -1,247 +1,387 @@
 /**
  * BoardLogic.ts
- * 2048 棋盘核心逻辑（纯 TypeScript，不依赖引擎渲染层）。
- * 负责：棋盘数据、方块生成、四个方向的移动与合并、得分计算、结束/胜利判定。
- * 每次 move() 会返回详细的移动记录，供上层驱动动画。
+ * 2048 棋盘核心逻辑，包含能量槽、炸弹方块和 3x3 爆炸机制。
+ * 该文件不依赖 Cocos Creator，可独立进行逻辑测试。
  */
 
 export type Direction = 'up' | 'down' | 'left' | 'right';
+export type Difficulty = 'easy' | 'normal' | 'hard' | 'nightmare';
 
-/** 棋盘上的一个坐标 */
+export interface DifficultyConfig {
+    label: string;
+    target: number;
+    /** 生成普通 4 的概率，剩余概率生成 2。 */
+    fourProbability: number;
+}
+
+export const DIFFICULTY_CONFIGS: Record<Difficulty, DifficultyConfig> = {
+    easy: { label: '简单', target: 1024, fourProbability: 0.10 },
+    normal: { label: '中等', target: 2048, fourProbability: 0.10 },
+    hard: { label: '困难', target: 4096, fourProbability: 0.05 },
+    nightmare: { label: '噩梦', target: 8192, fourProbability: 0.02 },
+};
+
+/** 棋盘上的一个方块；id 用于让 UI 在移动和合并时追踪同一个方块。 */
+export interface TileData {
+    id: number;
+    value: number;
+    isBomb?: boolean;
+}
+
+/** 棋盘坐标。row 从上到下，col 从左到右。 */
 export interface Pos {
     row: number;
     col: number;
 }
 
-/** 一次移动记录：某个目标格子的值由哪些来源格子的方块产生 */
+/** 一次移动中，一个目标方块的完整来源记录。 */
 export interface TileMove {
-    /** 来源坐标（合并时含两个来源） */
     from: Pos[];
-    /** 目标坐标 */
+    sourceIds: number[];
+    sourceBombs: boolean[];
     to: Pos;
-    /** 目标格子的值 */
     value: number;
-    /** 是否发生了合并 */
     merged: boolean;
+    /** 合并后保留的主方块 ID。 */
+    resultId: number;
+    /** 本次合并是否有炸弹参与。 */
+    bombTriggered: boolean;
+    /** 合并后的目标是否仍为炸弹；当前规则下合并结果为普通方块。 */
+    resultIsBomb: boolean;
 }
 
-export class BoardLogic {
-    /** 棋盘维度（4x4） */
-    public readonly size: number;
-    /** 当前棋盘数据，grid[row][col]，0 表示空格 */
-    public grid: number[][];
-    /** 当前分数 */
-    public score: number;
+export interface ExplosionEvent {
+    center: Pos;
+    value: number;
+    targetPositions: Pos[];
+    targetIds: number[];
+    scoreGained: number;
+}
 
-    constructor(size: number = 4) {
+export interface MoveResult {
+    moves: TileMove[];
+    explosions: ExplosionEvent[];
+    combo: number;
+    energy: number;
+    maxEnergy: number;
+    bombNextSpawn: boolean;
+}
+
+interface SlideResult {
+    out: TileData[];
+    sourceIndexes: number[][];
+    sourceBombs: boolean[][];
+    bombMerges: boolean[];
+}
+
+const ENERGY_PER_MERGE = 20;
+const MAX_ENERGY = 100;
+
+/** 采用文档允许的九宫格爆炸范围，中心格由 resolveExplosions 保留。 */
+const BLAST_OFFSETS: Pos[] = [
+    { row: -1, col: -1 }, { row: -1, col: 0 }, { row: -1, col: 1 },
+    { row: 0, col: -1 }, { row: 0, col: 0 }, { row: 0, col: 1 },
+    { row: 1, col: -1 }, { row: 1, col: 0 }, { row: 1, col: 1 },
+];
+
+export class BoardLogic {
+    public readonly size: number;
+    public readonly difficulty: Difficulty;
+    public readonly maxEnergy = MAX_ENERGY;
+    public grid: TileData[][];
+    public score: number;
+    public energy: number;
+    /** 能量满或 Combo 达标后，下一次生成的方块会成为炸弹。 */
+    public bombNextSpawn: boolean;
+
+    private nextTileId = 1;
+
+    public constructor(size: number = 4, difficulty: Difficulty = 'easy') {
+        if (!Number.isInteger(size) || size < 2) {
+            throw new Error('棋盘尺寸必须是大于等于 2 的整数');
+        }
+        if (!DIFFICULTY_CONFIGS[difficulty]) {
+            throw new Error(`未知难度：${difficulty}`);
+        }
         this.size = size;
+        this.difficulty = difficulty;
         this.grid = [];
         this.score = 0;
+        this.energy = 0;
+        this.bombNextSpawn = false;
         this.reset();
     }
 
-    /** 重置棋盘并生成两个初始方块 */
+    /** 重置棋盘，并在两个随机空格生成初始方块。 */
     public reset(): void {
-        this.grid = [];
-        for (let r = 0; r < this.size; r++) {
-            this.grid.push(new Array<number>(this.size).fill(0));
-        }
+        this.grid = Array.from(
+            { length: this.size },
+            () => Array.from({ length: this.size }, () => this.emptyTile()),
+        );
         this.score = 0;
+        this.energy = 0;
+        this.bombNextSpawn = false;
         this.spawnTile();
         this.spawnTile();
     }
 
-    /** 获取空格子列表 */
     public emptyCells(): Pos[] {
         const cells: Pos[] = [];
-        for (let r = 0; r < this.size; r++) {
-            for (let c = 0; c < this.size; c++) {
-                if (this.grid[r][c] === 0) {
-                    cells.push({ row: r, col: c });
-                }
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                if (this.grid[row][col].value === 0) cells.push({ row, col });
             }
         }
         return cells;
     }
 
-    /** 在随机空格子生成一个新方块（90% 为 2，10% 为 4）。无可放位置时返回 null */
+    /** 在随机空格生成普通 2/4 或待生成的炸弹 2/4。 */
     public spawnTile(): Pos | null {
-        const empty = this.emptyCells();
-        if (empty.length === 0) {
-            return null;
+        const cells = this.emptyCells();
+        if (cells.length === 0) return null;
+
+        const pos = cells[Math.floor(Math.random() * cells.length)];
+        const isBomb = this.bombNextSpawn;
+        this.grid[pos.row][pos.col] = {
+            id: this.nextTileId++,
+            value: Math.random() < this.config.fourProbability ? 4 : 2,
+            isBomb: isBomb || undefined,
+        };
+
+        if (isBomb) {
+            this.bombNextSpawn = false;
+            this.energy = 0;
         }
-        const pos = empty[Math.floor(Math.random() * empty.length)];
-        this.grid[pos.row][pos.col] = Math.random() < 0.9 ? 2 : 4;
         return pos;
     }
 
     /**
-     * 压缩并合并一行（从左到右方向）。
-     * @param values 原始一行数据
-     * @returns 处理后的行，以及每个目标位置对应的来源索引
+     * 移动、合并、充能并处理炸弹爆炸。
+     * 无效移动返回空 moves，不生成新方块，也不改变能量和分数。
      */
-    private slideLine(values: number[]): { out: number[]; src: number[][] } {
-        // 提取非零元素（保持顺序）
-        const nonzero = values
-            .map((v, i) => ({ v, i }))
-            .filter((x) => x.v !== 0);
-
-        const out: number[] = [];
-        const src: number[][] = [];
-
-        let i = 0;
-        while (i < nonzero.length) {
-            if (i + 1 < nonzero.length && nonzero[i].v === nonzero[i + 1].v) {
-                out.push(nonzero[i].v * 2);
-                src.push([nonzero[i].i, nonzero[i + 1].i]);
-                i += 2;
-            } else {
-                out.push(nonzero[i].v);
-                src.push([nonzero[i].i]);
-                i += 1;
-            }
-        }
-        // 补齐空格
-        while (out.length < values.length) {
-            out.push(0);
-            src.push([]);
-        }
-        return { out, src };
-    }
-
-    /**
-     * 按指定方向移动并合并所有方块。
-     * @returns 移动记录；若无任何移动（含无合并）返回空数组
-     */
-    public move(dir: Direction): TileMove[] {
+    public move(direction: Direction): MoveResult {
         const moves: TileMove[] = [];
-        const n = this.size;
 
-        if (dir === 'left') {
-            for (let r = 0; r < n; r++) {
-                const line = this.grid[r].slice();
-                const { out, src } = this.slideLine(line);
-                for (let c = 0; c < n; c++) {
-                    this.grid[r][c] = out[c];
-                }
-                for (let c = 0; c < n; c++) {
-                    if (src[c].length === 0) continue;
-                    moves.push({
-                        from: src[c].map((i) => ({ row: r, col: i })),
-                        to: { row: r, col: c },
-                        value: out[c],
-                        merged: src[c].length === 2,
-                    });
-                }
+        if (direction === 'left' || direction === 'right') {
+            for (let row = 0; row < this.size; row++) {
+                const original = this.grid[row].slice();
+                const values = direction === 'left' ? original : original.slice().reverse();
+                const result = this.slideLine(values);
+                const output = direction === 'left' ? result.out : result.out.slice().reverse();
+                this.grid[row] = output;
+                this.appendMoves(
+                    moves,
+                    result,
+                    row,
+                    direction === 'left',
+                    false,
+                    values,
+                );
             }
-        } else if (dir === 'right') {
-            for (let r = 0; r < n; r++) {
-                const rev = this.grid[r].slice().reverse();
-                const { out, src } = this.slideLine(rev);
-                for (let c = 0; c < n; c++) {
-                    this.grid[r][n - 1 - c] = out[c];
-                }
-                for (let k = 0; k < n; k++) {
-                    if (src[k].length === 0) continue;
-                    moves.push({
-                        from: src[k].map((i) => ({ row: r, col: n - 1 - i })),
-                        to: { row: r, col: n - 1 - k },
-                        value: out[k],
-                        merged: src[k].length === 2,
-                    });
-                }
-            }
-        } else if (dir === 'up') {
-            for (let c = 0; c < n; c++) {
-                const col = [];
-                for (let r = 0; r < n; r++) col.push(this.grid[r][c]);
-                const { out, src } = this.slideLine(col);
-                for (let r = 0; r < n; r++) {
-                    this.grid[r][c] = out[r];
-                }
-                for (let k = 0; k < n; k++) {
-                    if (src[k].length === 0) continue;
-                    moves.push({
-                        from: src[k].map((i) => ({ row: i, col: c })),
-                        to: { row: k, col: c },
-                        value: out[k],
-                        merged: src[k].length === 2,
-                    });
-                }
-            }
-        } else if (dir === 'down') {
-            for (let c = 0; c < n; c++) {
-                const col = [];
-                for (let r = n - 1; r >= 0; r--) col.push(this.grid[r][c]);
-                const { out, src } = this.slideLine(col);
-                for (let r = 0; r < n; r++) {
-                    this.grid[n - 1 - r][c] = out[r];
-                }
-                for (let k = 0; k < n; k++) {
-                    if (src[k].length === 0) continue;
-                    moves.push({
-                        from: src[k].map((i) => ({ row: n - 1 - i, col: c })),
-                        to: { row: n - 1 - k, col: c },
-                        value: out[k],
-                        merged: src[k].length === 2,
-                    });
-                }
+        } else {
+            for (let col = 0; col < this.size; col++) {
+                const original: TileData[] = [];
+                for (let row = 0; row < this.size; row++) original.push(this.grid[row][col]);
+
+                const values = direction === 'up' ? original : original.slice().reverse();
+                const result = this.slideLine(values);
+                const output = direction === 'up' ? result.out : result.out.slice().reverse();
+                for (let row = 0; row < this.size; row++) this.grid[row][col] = output[row];
+                this.appendMoves(
+                    moves,
+                    result,
+                    col,
+                    direction === 'up',
+                    true,
+                    values,
+                );
             }
         }
 
-        // 过滤掉「未真正移动」的占位记录：只有发生位移或合并的记录才保留
-        const realMoves = moves.filter((m) => {
-            if (m.merged) return true;
-            const f = m.from[0];
-            return f.row !== m.to.row || f.col !== m.to.col;
+        const realMoves = moves.filter((move) => {
+            if (move.merged) return true;
+            const from = move.from[0];
+            return from.row !== move.to.row || from.col !== move.to.col;
         });
+        const combo = realMoves.reduce((count, move) => count + (move.merged ? 1 : 0), 0);
 
-        // 只有发生真实移动或合并才累加分数
-        if (realMoves.length > 0) {
-            for (const m of realMoves) {
-                if (m.merged) {
-                    this.score += m.value;
-                }
-            }
+        if (realMoves.length === 0) {
+            return {
+                moves: [],
+                explosions: [],
+                combo: 0,
+                energy: this.energy,
+                maxEnergy: this.maxEnergy,
+                bombNextSpawn: this.bombNextSpawn,
+            };
         }
-        return realMoves;
+
+        this.score += realMoves.reduce((total, move) => total + (move.merged ? move.value : 0), 0);
+        this.energy = Math.min(this.maxEnergy, this.energy + combo * ENERGY_PER_MERGE);
+        if (combo >= 3 || this.energy >= this.maxEnergy) this.bombNextSpawn = true;
+
+        const explosions = this.resolveExplosions(realMoves);
+        return {
+            moves: realMoves,
+            explosions,
+            combo,
+            energy: this.energy,
+            maxEnergy: this.maxEnergy,
+            bombNextSpawn: this.bombNextSpawn,
+        };
     }
 
-    /** 是否存在空格 */
     public hasEmpty(): boolean {
-        for (let r = 0; r < this.size; r++) {
-            for (let c = 0; c < this.size; c++) {
-                if (this.grid[r][c] === 0) return true;
-            }
-        }
-        return false;
+        return this.emptyCells().length > 0;
     }
 
-    /** 棋盘上是否有相邻相等（可继续合并） */
     public hasAdjacentEqual(): boolean {
-        for (let r = 0; r < this.size; r++) {
-            for (let c = 0; c < this.size; c++) {
-                const v = this.grid[r][c];
-                if (v === 0) continue;
-                if (c + 1 < this.size && this.grid[r][c + 1] === v) return true;
-                if (r + 1 < this.size && this.grid[r + 1][c] === v) return true;
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                const value = this.grid[row][col].value;
+                if (value === 0) continue;
+                if (col + 1 < this.size && this.grid[row][col + 1].value === value) return true;
+                if (row + 1 < this.size && this.grid[row + 1][col].value === value) return true;
             }
         }
         return false;
     }
 
-    /** 游戏是否已结束（无法再移动） */
     public isGameOver(): boolean {
         return !this.hasEmpty() && !this.hasAdjacentEqual();
     }
 
-    /** 是否达到胜利值 */
-    public hasWon(target: number = 2048): boolean {
-        for (let r = 0; r < this.size; r++) {
-            for (let c = 0; c < this.size; c++) {
-                if (this.grid[r][c] >= target) return true;
+    public hasWon(target: number = this.config.target): boolean {
+        for (const row of this.grid) {
+            for (const tile of row) {
+                if (tile.value >= target) return true;
             }
         }
         return false;
+    }
+
+    private get config(): DifficultyConfig {
+        return DIFFICULTY_CONFIGS[this.difficulty];
+    }
+
+    private emptyTile(): TileData {
+        return { id: 0, value: 0 };
+    }
+
+    private slideLine(line: TileData[]): SlideResult {
+        const nonempty = line
+            .map((tile, index) => ({ tile, index }))
+            .filter((item) => item.tile.value !== 0);
+        const out: TileData[] = [];
+        const sourceIndexes: number[][] = [];
+        const sourceBombs: boolean[][] = [];
+        const bombMerges: boolean[] = [];
+
+        let index = 0;
+        while (index < nonempty.length) {
+            const current = nonempty[index];
+            const next = nonempty[index + 1];
+            if (next && current.tile.value === next.tile.value) {
+                const bombs = [!!current.tile.isBomb, !!next.tile.isBomb];
+                current.tile.value *= 2;
+                // 炸弹参与合成后，中心新方块为普通方块。
+                current.tile.isBomb = undefined;
+                out.push(current.tile);
+                sourceIndexes.push([current.index, next.index]);
+                sourceBombs.push(bombs);
+                bombMerges.push(bombs[0] || bombs[1]);
+                index += 2;
+            } else {
+                out.push(current.tile);
+                sourceIndexes.push([current.index]);
+                sourceBombs.push([!!current.tile.isBomb]);
+                bombMerges.push(false);
+                index += 1;
+            }
+        }
+
+        while (out.length < line.length) {
+            out.push(this.emptyTile());
+            sourceIndexes.push([]);
+            sourceBombs.push([]);
+            bombMerges.push(false);
+        }
+        return { out, sourceIndexes, sourceBombs, bombMerges };
+    }
+
+    private appendMoves(
+        moves: TileMove[],
+        result: SlideResult,
+        fixedIndex: number,
+        forward: boolean,
+        isColumn: boolean,
+        sourceLine: TileData[],
+    ): void {
+        for (let targetIndex = 0; targetIndex < result.sourceIndexes.length; targetIndex++) {
+            const indexes = result.sourceIndexes[targetIndex];
+            if (indexes.length === 0) continue;
+
+            const from = indexes.map((index) => {
+                const actualIndex = forward ? index : this.size - 1 - index;
+                return isColumn
+                    ? { row: actualIndex, col: fixedIndex }
+                    : { row: fixedIndex, col: actualIndex };
+            });
+            const actualTarget = forward ? targetIndex : this.size - 1 - targetIndex;
+            const to = isColumn
+                ? { row: actualTarget, col: fixedIndex }
+                : { row: fixedIndex, col: actualTarget };
+            const sourceIds = indexes.map((index) => sourceLine[index].id);
+            const sourceBombs = result.sourceBombs[targetIndex];
+
+            moves.push({
+                from,
+                sourceIds,
+                sourceBombs,
+                to,
+                value: result.out[targetIndex].value,
+                merged: indexes.length === 2,
+                resultId: sourceIds[0],
+                bombTriggered: result.bombMerges[targetIndex],
+                resultIsBomb: false,
+            });
+        }
+    }
+
+    private resolveExplosions(moves: TileMove[]): ExplosionEvent[] {
+        const explosions: ExplosionEvent[] = [];
+        const destroyedIds = new Set<number>();
+
+        for (const move of moves) {
+            if (!move.merged || !move.bombTriggered) continue;
+
+            const targetPositions: Pos[] = [];
+            const targetIds: number[] = [];
+            let scoreGained = 0;
+            for (const offset of BLAST_OFFSETS) {
+                const row = move.to.row + offset.row;
+                const col = move.to.col + offset.col;
+                if (row < 0 || row >= this.size || col < 0 || col >= this.size) continue;
+                if (row === move.to.row && col === move.to.col) continue;
+
+                const tile = this.grid[row][col];
+                if (tile.value === 0 || tile.value > move.value || destroyedIds.has(tile.id)) continue;
+                targetPositions.push({ row, col });
+                targetIds.push(tile.id);
+                scoreGained += tile.value * 2;
+                destroyedIds.add(tile.id);
+                this.grid[row][col] = this.emptyTile();
+            }
+
+            this.score += scoreGained;
+            explosions.push({
+                center: { row: move.to.row, col: move.to.col },
+                value: move.value,
+                targetPositions,
+                targetIds,
+                scoreGained,
+            });
+        }
+        return explosions;
     }
 }
