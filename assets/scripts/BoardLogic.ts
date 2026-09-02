@@ -298,6 +298,34 @@ export class BoardLogic {
         return !this.hasEmpty() && !this.hasAdjacentEqual();
     }
 
+    /**
+     * 移除网格中数值最小的 count 个方块（复活机制使用）。
+     * @param count 移除数量
+     * @returns 移除的坐标数组
+     */
+    public removeSmallestTiles(count: number): Pos[] {
+        const list: { pos: Pos, tile: TileData }[] = [];
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                const tile = this.grid[row][col];
+                if (tile.value > 0) {
+                    list.push({ pos: { row, col }, tile });
+                }
+            }
+        }
+        // 按数值升序排列，如果数值相同则按位置任意顺序
+        list.sort((a, b) => a.tile.value - b.tile.value);
+
+        const removedPositions: Pos[] = [];
+        const removeCount = Math.min(count, list.length);
+        for (let i = 0; i < removeCount; i++) {
+            const pos = list[i].pos;
+            this.grid[pos.row][pos.col] = this.emptyTile();
+            removedPositions.push(pos);
+        }
+        return removedPositions;
+    }
+
     public hasWon(target: number = this.config.target): boolean {
         for (const row of this.grid) {
             for (const tile of row) {

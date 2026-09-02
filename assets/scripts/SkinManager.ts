@@ -135,6 +135,7 @@ export class SkinManager {
     private coins = 0;
     private unlockedSkins: Set<string> = new Set(['classic']);
     private equippedSkinId = 'classic';
+    private adWatchedProgress: Map<string, number> = new Map();
 
     private constructor() {
         this.loadData();
@@ -166,6 +167,17 @@ export class SkinManager {
             this.equippedSkinId = savedEquipped;
         } else {
             this.equippedSkinId = 'classic';
+        }
+
+        // 加载广告解锁进度
+        const savedAdProgress = sys.localStorage.getItem('2048_ad_progress');
+        if (savedAdProgress) {
+            try {
+                const progressObj = JSON.parse(savedAdProgress);
+                for (const key in progressObj) {
+                    this.adWatchedProgress.set(key, progressObj[key]);
+                }
+            } catch (e) {}
         }
     }
 
@@ -225,12 +237,40 @@ export class SkinManager {
         if (this.coins < config.price) return false;
 
         this.coins -= config.price;
+        this.unlockSkinInternal(skinId);
+        return true;
+    }
+
+    private unlockSkinInternal(skinId: string): void {
         this.unlockedSkins.add(skinId);
         sys.localStorage.setItem(KEY_COINS, String(this.coins));
         sys.localStorage.setItem(KEY_UNLOCKED, JSON.stringify(Array.from(this.unlockedSkins)));
         // 自动装备新买的皮肤
         this.equipSkin(skinId);
-        return true;
+    }
+
+    // ==================== 广告解锁 ====================
+
+    public getAdWatchedCount(skinId: string): number {
+        return this.adWatchedProgress.get(skinId) || 0;
+    }
+
+    public watchAdForSkin(skinId: string): boolean {
+        if (this.isSkinUnlocked(skinId)) return true;
+        
+        const currentCount = this.getAdWatchedCount(skinId) + 1;
+        this.adWatchedProgress.set(skinId, currentCount);
+        
+        // 保存进度
+        const progressObj: any = {};
+        this.adWatchedProgress.forEach((val, key) => progressObj[key] = val);
+        sys.localStorage.setItem('2048_ad_progress', JSON.stringify(progressObj));
+
+        if (currentCount >= 5) {
+            this.unlockSkinInternal(skinId);
+            return true; // 已解锁
+        }
+        return false; // 还未解锁
     }
 
     /**

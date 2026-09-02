@@ -19,6 +19,7 @@ import {
     MoveResult, TileData, TileMove,
 } from './BoardLogic';
 import { SkinManager, SKIN_CONFIGS, SkinConfig } from './SkinManager';
+import { AdManager } from './AdManager';
 
 const { ccclass, property } = _decorator;
 
@@ -130,6 +131,10 @@ export class GameManager extends Component {
     private shopPanel!: Node;
     private shopCoinsLabel!: Label;
     private lastScore = 0;
+    private coinsEarnedThisGame = 0;
+    private hasRevivedThisGame = false;
+    private reviveButtonNode: Node | null = null;
+    private doubleCoinButtonNode: Node | null = null;
     private energyShownRatio = 0;       // 当前显示的充能比例（0~1），用于平滑动画
     private energyTween: Tween<{ ratio: number }> | null = null;
     private energyPulseTween: Tween<UIOpacity> | null = null;
@@ -248,6 +253,7 @@ export class GameManager extends Component {
         this.updateEnergy(0, 100);
 
         this.createCoinUI();
+        this.createAdEnergyButton();
         this.buildShopOverlayUI();
     }
 
@@ -309,7 +315,6 @@ export class GameManager extends Component {
         this.updateCoinsLabel();
     }
 
-    /** 为分数/最佳面板添加标题行，数值下移，形成两行布局 */
     private addPanelTitle(panel: Node, title: string): void {
         let titleNode = panel.getChildByName('Title');
         if (!titleNode) {
@@ -328,6 +333,50 @@ export class GameManager extends Component {
         const valueNode = panel.getChildByName('Value');
         if (valueNode) {
             valueNode.setPosition(0, -20, 0);
+        }
+    }
+
+    private createAdEnergyButton(): void {
+        let adEnergyBtn = this.node.getChildByName('AdEnergyButton');
+        if (!adEnergyBtn) {
+            adEnergyBtn = new Node('AdEnergyButton');
+            adEnergyBtn.layer = Layers.Enum.UI_2D;
+            // 放置在能量条右侧
+            adEnergyBtn.setPosition(250, 485, 0);
+            this.node.addChild(adEnergyBtn);
+            const transform = adEnergyBtn.addComponent(UITransform);
+            transform.setContentSize(120, 40);
+            this.drawPanel(adEnergyBtn, new Color(40, 160, 80), 8);
+
+            const labelNode = new Node('Label');
+            labelNode.layer = Layers.Enum.UI_2D;
+            adEnergyBtn.addChild(labelNode);
+            const btnLabel = labelNode.addComponent(Label);
+            btnLabel.string = '⚡ 满能量';
+            btnLabel.fontSize = 18;
+            btnLabel.color = COLOR_TEXT_LIGHT;
+
+            // 添加闪烁呼吸动画，吸引玩家点击
+            const opacity = adEnergyBtn.addComponent(UIOpacity);
+            tween(opacity)
+                .repeatForever(
+                    tween(opacity)
+                        .to(0.8, { opacity: 150 })
+                        .to(0.8, { opacity: 255 })
+                )
+                .start();
+
+            adEnergyBtn.on(Node.EventType.TOUCH_END, async () => {
+                // 如果游戏已经结束或能量已满，则不触发
+                if (this.board && this.board.energy >= this.board.maxEnergy) return;
+                
+                const success = await AdManager.instance.showRewardedVideo('energy_refill');
+                if (success && this.board) {
+                    this.board.energy = this.board.maxEnergy;
+                    this.updateEnergy(this.board.energy, this.board.maxEnergy);
+                    // 满能量爆火花特效已经在 updateEnergy 中处理了
+                }
+            }, this);
         }
     }
 
@@ -369,6 +418,9 @@ export class GameManager extends Component {
         this.makeLabel('✕', 26, COLOR_TEXT_LIGHT, closeBtn, Vec3.ZERO);
         closeBtn.on(Node.EventType.TOUCH_END, () => {
             this.shopOverlay.active = false;
+            if (!this.difficultyOverlay.active && !this.resultOverlay.active) {
+                AdManager.instance.hideBanner();
+            }
         }, this);
 
         this.refreshShopUI();
@@ -481,7 +533,7 @@ export class GameManager extends Component {
             // ==================== 右侧操作按钮 ====================
             const btnNode = new Node('ActionButton');
             btnNode.layer = Layers.Enum.UI_2D;
-            btnNode.setPosition(200, 0, 0);
+            btnNode.setPosition(200, (skin.price >= 600 && !isUnlocked) ? 20 : 0, 0);
             cardNode.addChild(btnNode);
 
             const btnTrans = btnNode.addComponent(UITransform);
@@ -517,6 +569,32 @@ export class GameManager extends Component {
                     }
                 }, this);
             }
+
+            // ==================== 广告解锁按钮 (史诗皮肤专属) ====================
+            if (!isUnlocked && skin.price >= 600) {
+                const adBtnNode = new Node('AdUnlockButton');
+                adBtnNode.layer = Layers.Enum.UI_2D;
+                adBtnNode.setPosition(200, -35, 0);
+                cardNode.addChild(adBtnNode);
+
+                const adBtnTrans = adBtnNode.addComponent(UITransform);
+                adBtnTrans.setContentSize(130, 40);
+                this.drawPanel(adBtnNode, new Color(100, 150, 240), 8);
+
+                const adProgress = SkinManager.instance.getAdWatchedCount(skin.id);
+                this.makeLabel(`🎬 解锁 (${adProgress}/5)`, 16, COLOR_TEXT_LIGHT, adBtnNode, Vec3.ZERO);
+
+                adBtnNode.on(Node.EventType.TOUCH_END, async () => {
+                    const success = await AdManager.instance.showRewardedVideo('shop_freebie');
+                    if (success) {
+                        const unlocked = SkinManager.instance.watchAdForSkin(skin.id);
+                        if (unlocked) {
+                            SkinManager.instance.equipSkin(skin.id);
+                        }
+                        this.onSkinChanged(); // 刷新商店与界面
+                    }
+                }, this);
+            }
         });
     }
 
@@ -524,6 +602,7 @@ export class GameManager extends Component {
         if (!this.shopOverlay) return;
         this.refreshShopUI();
         this.shopOverlay.active = true;
+        AdManager.instance.showBanner();
         const opacity = this.shopOverlay.getComponent(UIOpacity);
         if (opacity) {
             opacity.opacity = 0;
@@ -657,8 +736,11 @@ export class GameManager extends Component {
     // ==================== 难度选择 ====================
 
     private showDifficultySelection(): void {
-        this.difficultyOverlay.active = true;
-        this.resultOverlay.active = false;
+        this.runWithInterstitialTransition(() => {
+            this.difficultyOverlay.active = true;
+            this.resultOverlay.active = false;
+            AdManager.instance.showBanner();
+        });
     }
 
     private selectDifficulty(difficulty: Difficulty): void {
@@ -676,8 +758,11 @@ export class GameManager extends Component {
     // ==================== 游戏流程 ====================
 
     private startGame(): void {
+        AdManager.instance.hideBanner();
         this.moveVersion++;
         this.isAnimating = false;
+        this.coinsEarnedThisGame = 0;
+        this.hasRevivedThisGame = false;
         this.board = new BoardLogic(4, this.difficulty); // 构造函数 reset() 已生成 2 个方块
         this.gameStarted = true;
         this.won = false;
@@ -695,8 +780,37 @@ export class GameManager extends Component {
     }
 
     private restart(): void {
-        this.closeOverlay();
-        this.startGame();
+        this.runWithInterstitialTransition(() => {
+            this.closeOverlay();
+            this.startGame();
+        });
+    }
+
+    private runWithInterstitialTransition(callback: () => void): void {
+        if (AdManager.instance.shouldShowInterstitial()) {
+            let toast = this.node.getChildByName('AdToast');
+            if (!toast) {
+                toast = new Node('AdToast');
+                toast.layer = Layers.Enum.UI_2D;
+                this.node.addChild(toast);
+                const bg = toast.addComponent(Graphics);
+                bg.fillColor = new Color(0, 0, 0, 220);
+                this.roundRect(bg, -180, -40, 360, 80, 12);
+                bg.fill();
+                this.makeLabel('即将展示广告...', 24, COLOR_TEXT_LIGHT, toast, Vec3.ZERO);
+            }
+            toast.active = true;
+            toast.setSiblingIndex(this.node.children.length - 1);
+            
+            this.scheduleOnce(() => {
+                toast!.active = false;
+                callback();
+                AdManager.instance.showInterstitial();
+            }, 1.0);
+        } else {
+            callback();
+            AdManager.instance.showInterstitial(); // 让它累加计数器
+        }
     }
 
     private doMove(dir: Direction): void {
@@ -1067,7 +1181,8 @@ export class GameManager extends Component {
     private updateScore(): void {
         const diffScore = this.board.score - this.lastScore;
         if (diffScore > 0) {
-            SkinManager.instance.addCoinsFromScore(diffScore, this.difficulty);
+            const gainedCoins = SkinManager.instance.addCoinsFromScore(diffScore, this.difficulty);
+            this.coinsEarnedThisGame += gainedCoins;
             this.lastScore = this.board.score;
         } else if (this.board.score === 0) {
             this.lastScore = 0;
@@ -1114,7 +1229,7 @@ export class GameManager extends Component {
                     if (isIncreasing && Math.random() < 0.45) {
                         const transform = this.energyBarFill.getComponent(UITransform);
                         if (transform) {
-                            const headX = transform.width * this.energyShownRatio - transform.width / 2;
+                            const headX = transform.width * this.energyShownRatio - transform.width * transform.anchorX;
                             this.spawnEnergySparks(new Vec3(headX, 0, 0), 4);
                         }
                     }
@@ -1128,7 +1243,7 @@ export class GameManager extends Component {
                 if (isIncreasing) {
                     const transform = this.energyBarFill.getComponent(UITransform);
                     if (transform) {
-                        const headX = transform.width * target - transform.width / 2;
+                        const headX = transform.width * target - transform.width * transform.anchorX;
                         this.spawnEnergySparks(new Vec3(headX, 0, 0), 16);
                     }
                 }
@@ -1148,7 +1263,9 @@ export class GameManager extends Component {
 
         graphics.clear();
         const fillWidth = transform.width * this.energyShownRatio;
-        this.roundRect(graphics, -transform.width / 2, -transform.height / 2,
+        const leftX = -transform.width * transform.anchorX;
+        const bottomY = -transform.height * transform.anchorY;
+        this.roundRect(graphics, leftX, bottomY,
             fillWidth, transform.height, transform.height / 2);
         
         // 满能量使用炽热火花橙，平时使用亮金流光色
@@ -1216,7 +1333,8 @@ export class GameManager extends Component {
                         .call(() => {
                             const transform = this.energyBarFill.getComponent(UITransform);
                             if (transform) {
-                                this.spawnEnergySparks(new Vec3(transform.width / 2, 0, 0));
+                                const headX = transform.width * (1 - transform.anchorX);
+                                this.spawnEnergySparks(new Vec3(headX, 0, 0));
                             }
                         })
                         .to(0.35, { opacity: 255 }),
@@ -1355,12 +1473,90 @@ export class GameManager extends Component {
     private showOverlay(title: string, subtitle: string, isWin: boolean): void {
         if (this.resultOverlay.active) return;
         this.resultTitle.string = title;
-        this.resultSubtitle.string = subtitle;
+        this.resultSubtitle.string = `${subtitle}\n本局获得: 🪙 ${this.coinsEarnedThisGame}`;
+        
+        this.buildResultAdButtons(!isWin && !this.hasRevivedThisGame);
+
         this.resultOverlay.active = true;
         const opacity = this.resultOverlay.getComponent(UIOpacity);
         if (opacity) {
             opacity.opacity = 0;
             tween(opacity).to(0.25, { opacity: 255 }).start();
+        }
+    }
+
+    private buildResultAdButtons(showRevive: boolean): void {
+        // 重开按钮挪到底部
+        this.resultRestartButton.setPosition(0, -110, 0);
+
+        // 初始化复活按钮
+        if (!this.reviveButtonNode) {
+            this.reviveButtonNode = new Node('ReviveButton');
+            this.reviveButtonNode.layer = Layers.Enum.UI_2D;
+            this.resultPanel.addChild(this.reviveButtonNode);
+            const trans = this.reviveButtonNode.addComponent(UITransform);
+            trans.setContentSize(200, 56);
+            this.drawPanel(this.reviveButtonNode, new Color(240, 100, 80), 10);
+            this.makeLabel('🎬 观看广告复活', 20, COLOR_TEXT_LIGHT, this.reviveButtonNode, Vec3.ZERO);
+            
+            this.reviveButtonNode.on(Node.EventType.TOUCH_END, async () => {
+                const success = await AdManager.instance.showRewardedVideo('revive');
+                if (success) {
+                    this.hasRevivedThisGame = true;
+                    this.closeOverlay();
+                    const removed = this.board.removeSmallestTiles(5);
+                    // 刷新视图：移除对应的UI节点
+                    removed.forEach(pos => {
+                        const tileId = this.board.grid[pos.row][pos.col].id;
+                        // 因为 BoardLogic.removeSmallestTiles 直接把 grid 置空，没改 id。
+                        // 这里我们通过遍历所有现存的 tile 视图找到对应的移除
+                        this.tileMap.forEach((tv, id) => {
+                            if (tv.node.position.equals(this.cellPos(pos.row, pos.col))) {
+                                tv.node.destroy();
+                                this.tileMap.delete(id);
+                            }
+                        });
+                    });
+                }
+            }, this);
+        }
+
+        // 初始化三倍收益按钮
+        if (!this.doubleCoinButtonNode) {
+            this.doubleCoinButtonNode = new Node('DoubleCoinButton');
+            this.doubleCoinButtonNode.layer = Layers.Enum.UI_2D;
+            this.resultPanel.addChild(this.doubleCoinButtonNode);
+            const trans = this.doubleCoinButtonNode.addComponent(UITransform);
+            trans.setContentSize(200, 56);
+            this.drawPanel(this.doubleCoinButtonNode, new Color(230, 150, 40), 10);
+            this.makeLabel('🎬 收益 x3', 20, COLOR_TEXT_LIGHT, this.doubleCoinButtonNode, Vec3.ZERO);
+            
+            this.doubleCoinButtonNode.on(Node.EventType.TOUCH_END, async () => {
+                if (this.doubleCoinButtonNode!.active && this.coinsEarnedThisGame > 0) {
+                    const success = await AdManager.instance.showRewardedVideo('double_coin');
+                    if (success) {
+                        SkinManager.instance.addCoins(this.coinsEarnedThisGame * 2);
+                        this.doubleCoinButtonNode!.active = false; // 隐藏防多次点击
+                        this.resultSubtitle.string = this.resultSubtitle.string + '\n(已翻倍)';
+                        this.updateCoinsLabel();
+                    }
+                }
+            }, this);
+        }
+
+        // 控制显示
+        this.reviveButtonNode.active = showRevive;
+        this.doubleCoinButtonNode.active = this.coinsEarnedThisGame > 0;
+        
+        // 排列位置
+        let startY = 30;
+        if (this.reviveButtonNode.active) {
+            this.reviveButtonNode.setPosition(0, startY, 0);
+            startY -= 70;
+        }
+        if (this.doubleCoinButtonNode.active) {
+            this.doubleCoinButtonNode.setPosition(0, startY, 0);
+            startY -= 70;
         }
     }
 
