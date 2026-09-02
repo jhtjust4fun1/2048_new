@@ -10,15 +10,49 @@ export type Difficulty = 'easy' | 'normal' | 'hard' | 'nightmare';
 export interface DifficultyConfig {
     label: string;
     target: number;
-    /** 生成普通 4 的概率，剩余概率生成 2。 */
-    fourProbability: number;
+    /** 每次合并获得的能量值 */
+    energyPerMerge: number;
+    /** 触发下一个炸弹所需的最小 Combo 数 */
+    comboForBomb: number;
+    /** 生成方块数值及其概率配置 [{ value: number, prob: number }] */
+    spawnWeights: { value: number; prob: number }[];
+    /** 分数换算金币比例 (每多少分兑换 1 金币) */
+    coinRate: number;
 }
 
 export const DIFFICULTY_CONFIGS: Record<Difficulty, DifficultyConfig> = {
-    easy: { label: '简单', target: 1024, fourProbability: 0.10 },
-    normal: { label: '中等', target: 2048, fourProbability: 0.10 },
-    hard: { label: '困难', target: 4096, fourProbability: 0.05 },
-    nightmare: { label: '噩梦', target: 8192, fourProbability: 0.02 },
+    easy: {
+        label: '简单',
+        target: 1024,
+        energyPerMerge: 30,
+        comboForBomb: 2,
+        spawnWeights: [{ value: 2, prob: 0.90 }, { value: 4, prob: 0.10 }],
+        coinRate: 100,
+    },
+    normal: {
+        label: '中等',
+        target: 2048,
+        energyPerMerge: 20,
+        comboForBomb: 3,
+        spawnWeights: [{ value: 2, prob: 0.85 }, { value: 4, prob: 0.15 }],
+        coinRate: 50,
+    },
+    hard: {
+        label: '困难',
+        target: 4096,
+        energyPerMerge: 15,
+        comboForBomb: 4,
+        spawnWeights: [{ value: 2, prob: 0.75 }, { value: 4, prob: 0.20 }, { value: 8, prob: 0.05 }],
+        coinRate: 25,
+    },
+    nightmare: {
+        label: '噩梦',
+        target: 8192,
+        energyPerMerge: 10,
+        comboForBomb: 5,
+        spawnWeights: [{ value: 2, prob: 0.65 }, { value: 4, prob: 0.25 }, { value: 8, prob: 0.10 }],
+        coinRate: 10,
+    },
 };
 
 /** 棋盘上的一个方块；id 用于让 UI 在移动和合并时追踪同一个方块。 */
@@ -135,16 +169,29 @@ export class BoardLogic {
         return cells;
     }
 
-    /** 在随机空格生成普通 2/4 或待生成的炸弹 2/4。 */
+    /** 在随机空格生成普通 2/4/8 或待生成的炸弹方块。 */
     public spawnTile(): Pos | null {
         const cells = this.emptyCells();
         if (cells.length === 0) return null;
 
         const pos = cells[Math.floor(Math.random() * cells.length)];
         const isBomb = this.bombNextSpawn;
+        
+        // 根据难度权重计算本次生成的数值
+        const rand = Math.random();
+        let cumulative = 0;
+        let spawnValue = 2;
+        for (const item of this.config.spawnWeights) {
+            cumulative += item.prob;
+            if (rand <= cumulative) {
+                spawnValue = item.value;
+                break;
+            }
+        }
+
         this.grid[pos.row][pos.col] = {
             id: this.nextTileId++,
-            value: Math.random() < this.config.fourProbability ? 4 : 2,
+            value: spawnValue,
             isBomb: isBomb || undefined,
         };
 
@@ -217,8 +264,8 @@ export class BoardLogic {
         }
 
         this.score += realMoves.reduce((total, move) => total + (move.merged ? move.value : 0), 0);
-        this.energy = Math.min(this.maxEnergy, this.energy + combo * ENERGY_PER_MERGE);
-        if (combo >= 3 || this.energy >= this.maxEnergy) this.bombNextSpawn = true;
+        this.energy = Math.min(this.maxEnergy, this.energy + combo * this.config.energyPerMerge);
+        if (combo >= this.config.comboForBomb || this.energy >= this.maxEnergy) this.bombNextSpawn = true;
 
         const explosions = this.resolveExplosions(realMoves);
         return {

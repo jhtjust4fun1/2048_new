@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <!-- 工业斜纹警示图样 -->
+    <pattern id="hazardStripe" width="20" height="20" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <rect width="10" height="20" fill="#F1C40F"/>
+      <rect x="10" width="10" height="20" fill="#2C3E50"/>
+    </pattern>
+  </defs>
+  <!-- 重工业深灰底座 -->
+  <rect x="2" y="2" width="116" height="116" rx="10" fill="#1A1A1D" stroke="#000" stroke-width="2"/>
+  <!-- 斜纹警告外框 -->
+  <rect x="6" y="6" width="108" height="108" rx="8" fill="url(#hazardStripe)"/>
+  <!-- 中间下凹核心区（用来放数字） -->
+  <rect x="16" y="16" width="88" height="88" rx="6" fill="#2F3640" stroke="#1E272C" stroke-width="2"/>
+  <!-- 四个角的固定机械螺栓 -->
+  <circle cx="11" cy="11" r="2.5" fill="#95A5A6" stroke="#2C3E50" stroke-width="1"/>
+  <circle cx="109" cy="11" r="2.5" fill="#95A5A6" stroke="#2C3E50" stroke-width="1"/>
+  <circle cx="11" cy="109" r="2.5" fill="#95A5A6" stroke="#2C3E50" stroke-width="1"/>
+  <circle cx="109" cy="109" r="2.5" fill="#95A5A6" stroke="#2C3E50" stroke-width="1"/>
+</svg>

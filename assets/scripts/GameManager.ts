@@ -11,13 +11,14 @@
 import {
     _decorator, Component, Node, Graphics, Label, Color, tween, Vec3,
     UITransform, sys, input, Input, EventKeyboard, KeyCode,
-    EventTouch, Vec2, UIOpacity, Layers,
-    view, ResolutionPolicy,
+    EventTouch, Vec2, UIOpacity, Layers, resources, SpriteFrame, Sprite, Texture2D,
+    view, ResolutionPolicy, Tween,
 } from 'cc';
 import {
     BoardLogic, Difficulty, DIFFICULTY_CONFIGS, Direction, ExplosionEvent,
     MoveResult, TileData, TileMove,
 } from './BoardLogic';
+import { SkinManager, SKIN_CONFIGS, SkinConfig } from './SkinManager';
 
 const { ccclass, property } = _decorator;
 
@@ -31,6 +32,18 @@ interface TileView {
     isBomb: boolean;
     row: number;
     col: number;
+}
+
+/** 能量条持续粒子流中的单个火花粒子 */
+interface EnergyParticle {
+    x: number;      // 相对能量条填充条节点的局部 x（px）
+    y: number;      // 相对能量条填充条节点的局部 y（px）
+    vx: number;     // 水平速度
+    vy: number;     // 垂直速度
+    size: number;   // 半径
+    life: number;   // 剩余生命（秒）
+    maxLife: number;
+    golden: boolean; // 金色 / 橙色
 }
 
 /** 经典 2048 配色表 */
@@ -111,6 +124,18 @@ export class GameManager extends Component {
     @property(Node)
     private resultRestartButton!: Node;
 
+    private coinLabel!: Label;
+    private shopButton!: Node;
+    private shopOverlay!: Node;
+    private shopPanel!: Node;
+    private shopCoinsLabel!: Label;
+    private lastScore = 0;
+    private energyShownRatio = 0;       // 当前显示的充能比例（0~1），用于平滑动画
+    private energyTween: Tween<{ ratio: number }> | null = null;
+    private energyPulseTween: Tween<UIOpacity> | null = null;
+    private energyParticleLayer: Node | null = null;   // 持续粒子流承载节点
+    private energyParticles: EnergyParticle[] = [];    // 活动粒子列表
+
     private board!: BoardLogic;
     private tileMap: Map<number, TileView> = new Map(); // tileId -> 视图
     private isAnimating = false;
@@ -136,7 +161,10 @@ export class GameManager extends Component {
         // 触摸滑动
         this.node.on(Node.EventType.TOUCH_START, this.onTouchStart, this);
         this.node.on(Node.EventType.TOUCH_END, this.onTouchEnd, this);
-        this.newGameButton.on(Node.EventType.TOUCH_END, this.restart, this);
+        this.newGameButton.on(Node.EventType.TOUCH_END, this.showDifficultySelection, this);
+        if (this.shopButton) {
+            this.shopButton.on(Node.EventType.TOUCH_END, this.openShop, this);
+        }
         this.easyButton.on(Node.EventType.TOUCH_END, () => this.selectDifficulty('easy'), this);
         this.normalButton.on(Node.EventType.TOUCH_END, () => this.selectDifficulty('normal'), this);
         this.hardButton.on(Node.EventType.TOUCH_END, () => this.selectDifficulty('hard'), this);
@@ -150,11 +178,14 @@ export class GameManager extends Component {
         this.node.off(Node.EventType.TOUCH_END, this.onTouchEnd, this);
         // 场景加载或 onLoad 发生异常时，这些节点可能尚未绑定，销毁阶段不能再次抛错。
         if (this.newGameButton?.isValid) {
-            this.newGameButton.off(Node.EventType.TOUCH_END, this.restart, this);
+            this.newGameButton.off(Node.EventType.TOUCH_END, this.showDifficultySelection, this);
         }
         if (this.resultRestartButton?.isValid) {
             this.resultRestartButton.off(Node.EventType.TOUCH_END, this.restart, this);
         }
+        // 停止能量条充能动画，防止销毁后继续回调
+        if (this.energyTween) { this.energyTween.stop(); this.energyTween = null; }
+        if (this.energyPulseTween) { this.energyPulseTween.stop(); this.energyPulseTween = null; }
         this.moveVersion++;
     }
 
@@ -199,6 +230,8 @@ export class GameManager extends Component {
     private setupSceneUI(): void {
         this.drawPanel(this.scoreLabel.node.parent!, COLOR_PANEL_BG, 10);
         this.drawPanel(this.bestLabel.node.parent!, COLOR_PANEL_BG, 10);
+        this.addPanelTitle(this.scoreLabel.node.parent!, '当前');
+        this.addPanelTitle(this.bestLabel.node.parent!, '最高');
         this.drawPanel(this.newGameButton, COLOR_BTN_BG, 10);
         this.drawPanel(this.easyButton, COLOR_BTN_BG, 10);
         this.drawPanel(this.normalButton, COLOR_BTN_BG, 10);
@@ -207,11 +240,301 @@ export class GameManager extends Component {
         this.drawPanel(this.resultRestartButton, COLOR_BTN_BG, 10);
         this.drawBoardGraphics();
         this.drawEnergyBarBackground();
+        this.initEnergyParticleLayer();
         this.drawPanel(this.difficultyPanel, new Color(250, 248, 239), 14);
         this.drawPanel(this.resultPanel, new Color(250, 248, 239), 14);
         this.drawOverlayMask(this.difficultyOverlay);
         this.drawOverlayMask(this.resultOverlay);
         this.updateEnergy(0, 100);
+
+        this.createCoinUI();
+        this.buildShopOverlayUI();
+    }
+
+    private createCoinUI(): void {
+        let coinPanel = this.node.getChildByName('CoinPanel');
+        if (!coinPanel) {
+            coinPanel = new Node('CoinPanel');
+            coinPanel.layer = Layers.Enum.UI_2D;
+            coinPanel.setPosition(-230, 565, 0);
+            this.node.addChild(coinPanel);
+            const transform = coinPanel.addComponent(UITransform);
+            transform.setContentSize(160, 56);
+            this.drawPanel(coinPanel, COLOR_PANEL_BG, 10);
+
+            const titleNode = new Node('Title');
+            titleNode.layer = Layers.Enum.UI_2D;
+            titleNode.setPosition(0, 14, 0);
+            coinPanel.addChild(titleNode);
+            const titleLabel = titleNode.addComponent(Label);
+            titleLabel.string = '金币';
+            titleLabel.fontSize = 14;
+            titleLabel.color = COLOR_TEXT_LIGHT;
+
+            const valNode = new Node('Value');
+            valNode.layer = Layers.Enum.UI_2D;
+            valNode.setPosition(0, -10, 0);
+            coinPanel.addChild(valNode);
+            this.coinLabel = valNode.addComponent(Label);
+            this.coinLabel.fontSize = 20;
+            this.coinLabel.color = COLOR_TEXT_LIGHT;
+        } else {
+            this.coinLabel = coinPanel.getChildByName('Value')?.getComponent(Label)!;
+        }
+
+        let shopBtn = this.node.getChildByName('ShopButton');
+        if (!shopBtn) {
+            shopBtn = new Node('ShopButton');
+            shopBtn.layer = Layers.Enum.UI_2D;
+            shopBtn.setPosition(230, 565, 0);
+            this.node.addChild(shopBtn);
+            const transform = shopBtn.addComponent(UITransform);
+            transform.setContentSize(120, 56);
+            this.drawPanel(shopBtn, new Color(230, 140, 40), 10);
+
+            const labelNode = new Node('Label');
+            labelNode.layer = Layers.Enum.UI_2D;
+            shopBtn.addChild(labelNode);
+            const btnLabel = labelNode.addComponent(Label);
+            btnLabel.string = '🎨 商店';
+            btnLabel.fontSize = 20;
+            btnLabel.color = COLOR_TEXT_LIGHT;
+
+            this.shopButton = shopBtn;
+            shopBtn.on(Node.EventType.TOUCH_END, this.openShop, this);
+        } else {
+            this.shopButton = shopBtn;
+        }
+
+        this.updateCoinsLabel();
+    }
+
+    /** 为分数/最佳面板添加标题行，数值下移，形成两行布局 */
+    private addPanelTitle(panel: Node, title: string): void {
+        let titleNode = panel.getChildByName('Title');
+        if (!titleNode) {
+            titleNode = new Node('Title');
+            titleNode.layer = Layers.Enum.UI_2D;
+            titleNode.setPosition(0, 24, 0);
+            panel.addChild(titleNode);
+            const label = titleNode.addComponent(Label);
+            label.string = title;
+            label.fontSize = 14;
+            label.lineHeight = 18;
+            label.color = COLOR_TEXT_LIGHT;
+            label.horizontalAlign = Label.HorizontalAlign.CENTER;
+            label.verticalAlign = Label.VerticalAlign.CENTER;
+        }
+        const valueNode = panel.getChildByName('Value');
+        if (valueNode) {
+            valueNode.setPosition(0, -20, 0);
+        }
+    }
+
+    private buildShopOverlayUI(): void {
+        if (this.shopOverlay && this.shopOverlay.isValid) return;
+
+        this.shopOverlay = new Node('ShopOverlay');
+        this.shopOverlay.layer = Layers.Enum.UI_2D;
+        this.node.addChild(this.shopOverlay);
+        const transform = this.shopOverlay.addComponent(UITransform);
+        transform.setContentSize(720, 1280);
+        this.shopOverlay.addComponent(UIOpacity);
+        this.drawOverlayMask(this.shopOverlay);
+
+        this.shopPanel = new Node('Panel');
+        this.shopPanel.layer = Layers.Enum.UI_2D;
+        this.shopOverlay.addChild(this.shopPanel);
+        const panelTrans = this.shopPanel.addComponent(UITransform);
+        panelTrans.setContentSize(640, 880);
+        this.drawPanel(this.shopPanel, new Color(250, 248, 239), 16);
+
+        this.makeLabel('格子皮肤商店', 36, COLOR_TEXT_DARK, this.shopPanel, new Vec3(0, 390, 0));
+
+        const coinNode = new Node('ShopCoins');
+        coinNode.layer = Layers.Enum.UI_2D;
+        coinNode.setPosition(0, 335, 0);
+        this.shopPanel.addChild(coinNode);
+        this.shopCoinsLabel = coinNode.addComponent(Label);
+        this.shopCoinsLabel.fontSize = 24;
+        this.shopCoinsLabel.color = new Color(215, 140, 0);
+
+        const closeBtn = new Node('CloseButton');
+        closeBtn.layer = Layers.Enum.UI_2D;
+        closeBtn.setPosition(270, 390, 0);
+        this.shopPanel.addChild(closeBtn);
+        const closeTrans = closeBtn.addComponent(UITransform);
+        closeTrans.setContentSize(46, 46);
+        this.drawPanel(closeBtn, new Color(214, 70, 48), 23);
+        this.makeLabel('✕', 26, COLOR_TEXT_LIGHT, closeBtn, Vec3.ZERO);
+        closeBtn.on(Node.EventType.TOUCH_END, () => {
+            this.shopOverlay.active = false;
+        }, this);
+
+        this.refreshShopUI();
+        this.shopOverlay.active = false;
+    }
+
+    /** 尝试多种路径格式动态加载资源/图片 SpriteFrame */
+    private loadSkinSpriteFrame(resName: string, callback: (sf: SpriteFrame | null) => void): void {
+        resources.load(`skin/${resName}/spriteFrame`, SpriteFrame, (err, sf) => {
+            if (!err && sf) {
+                callback(sf);
+                return;
+            }
+            resources.load(`skin/${resName}`, SpriteFrame, (err2, sf2) => {
+                if (!err2 && sf2) {
+                    callback(sf2);
+                    return;
+                }
+                resources.load(`skin/${resName}`, Texture2D, (err3, tex) => {
+                    if (!err3 && tex) {
+                        const frame = new SpriteFrame();
+                        frame.texture = tex;
+                        callback(frame);
+                        return;
+                    }
+                    callback(null);
+                });
+            });
+        });
+    }
+
+    private refreshShopUI(): void {
+        if (!this.shopPanel) return;
+
+        const oldCards = this.shopPanel.children.filter((child) => child.name.startsWith('SkinCard_'));
+        oldCards.forEach((c) => c.destroy());
+
+        this.updateCoinsLabel();
+
+        const skins = SKIN_CONFIGS;
+        const startY = 220;
+        const cardHeight = 140;
+        const gap = 15;
+
+        skins.forEach((skin, index) => {
+            const cardNode = new Node(`SkinCard_${skin.id}`);
+            cardNode.layer = Layers.Enum.UI_2D;
+            cardNode.setPosition(0, startY - index * (cardHeight + gap), 0);
+            this.shopPanel.addChild(cardNode);
+
+            const trans = cardNode.addComponent(UITransform);
+            trans.setContentSize(580, cardHeight);
+
+            const isEquipped = SkinManager.instance.getEquippedSkinId() === skin.id;
+            const isUnlocked = SkinManager.instance.isSkinUnlocked(skin.id);
+
+            // 背景卡片
+            this.drawPanel(cardNode, isEquipped ? new Color(245, 235, 215) : new Color(238, 228, 218), 12);
+
+            // ==================== 左侧皮肤大图预览区 ====================
+            const previewNode = new Node('SkinPreview');
+            previewNode.layer = Layers.Enum.UI_2D;
+            previewNode.setPosition(-220, 0, 0);
+            cardNode.addChild(previewNode);
+
+            const pTrans = previewNode.addComponent(UITransform);
+            pTrans.setContentSize(90, 90);
+            this.drawPanel(previewNode, skin.colors[0].bg, 10);
+
+            // 加载大图 Sprite
+            if (skin.resName) {
+                this.loadSkinSpriteFrame(skin.resName, (sf) => {
+                    if (sf && previewNode && previewNode.isValid) {
+                        let sprite = previewNode.getComponent(Sprite) || previewNode.addComponent(Sprite);
+                        sprite.spriteFrame = sf;
+                    }
+                });
+            } else {
+                // 如果没有图片资源，画基础缩略图 label
+                this.makeLabel(skin.name.substring(0, 2), 24, skin.colors[0].text, previewNode, Vec3.ZERO);
+            }
+
+            // ==================== 中间信息区 ====================
+            const nameLabel = this.makeLabel(skin.name, 24, COLOR_TEXT_DARK, cardNode, new Vec3(-140, 35, 0));
+            nameLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
+
+            const descLabel = this.makeLabel(skin.description, 15, new Color(130, 120, 110), cardNode, new Vec3(-140, 5, 0));
+            descLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
+
+            // 属性 Color 样例预览 (3个 24x24 小圆点)
+            const sampleValues = [2, 8, 64];
+            sampleValues.forEach((val, i) => {
+                const sampleNode = new Node('SampleColor');
+                sampleNode.layer = Layers.Enum.UI_2D;
+                sampleNode.setPosition(-140 + i * 30, -32, 0);
+                cardNode.addChild(sampleNode);
+
+                const sampleTrans = sampleNode.addComponent(UITransform);
+                sampleTrans.setContentSize(24, 24);
+
+                const g = sampleNode.addComponent(Graphics);
+                this.roundRect(g, -12, -12, 24, 24, 4);
+
+                const colorIdx = Math.min(Math.floor(Math.log2(val)) - 1, skin.colors.length - 1);
+                const style = skin.colors[colorIdx >= 0 ? colorIdx : 0];
+                g.fillColor = style.bg;
+                g.fill();
+            });
+
+            // ==================== 右侧操作按钮 ====================
+            const btnNode = new Node('ActionButton');
+            btnNode.layer = Layers.Enum.UI_2D;
+            btnNode.setPosition(200, 0, 0);
+            cardNode.addChild(btnNode);
+
+            const btnTrans = btnNode.addComponent(UITransform);
+            btnTrans.setContentSize(130, 48);
+
+            let btnBg = COLOR_BTN_BG;
+            let btnText = '';
+
+            if (isEquipped) {
+                btnBg = new Color(120, 180, 90);
+                btnText = '已使用';
+            } else if (isUnlocked) {
+                btnBg = new Color(242, 177, 121);
+                btnText = '使用';
+            } else {
+                const canBuy = SkinManager.instance.getCoins() >= skin.price;
+                btnBg = canBuy ? new Color(246, 124, 95) : new Color(180, 170, 160);
+                btnText = `🪙 ${skin.price}`;
+            }
+
+            this.drawPanel(btnNode, btnBg, 8);
+            this.makeLabel(btnText, 20, COLOR_TEXT_LIGHT, btnNode, Vec3.ZERO);
+
+            if (!isEquipped) {
+                btnNode.on(Node.EventType.TOUCH_END, () => {
+                    if (isUnlocked) {
+                        SkinManager.instance.equipSkin(skin.id);
+                        this.onSkinChanged();
+                    } else {
+                        if (SkinManager.instance.buySkin(skin.id)) {
+                            this.onSkinChanged();
+                        }
+                    }
+                }, this);
+            }
+        });
+    }
+
+    private openShop(): void {
+        if (!this.shopOverlay) return;
+        this.refreshShopUI();
+        this.shopOverlay.active = true;
+        const opacity = this.shopOverlay.getComponent(UIOpacity);
+        if (opacity) {
+            opacity.opacity = 0;
+            tween(opacity).to(0.2, { opacity: 255 }).start();
+        }
+    }
+
+    private onSkinChanged(): void {
+        this.drawBoardGraphics();
+        this.tileMap.forEach((tv) => this.renderTile(tv));
+        this.refreshShopUI();
     }
 
     private drawPanel(node: Node, color: Color, radius: number): void {
@@ -253,12 +576,13 @@ export class GameManager extends Component {
     }
 
     private drawBoardGraphics(): void {
+        const skin = SkinManager.instance.getEquippedSkin();
         const background = this.boardRoot.getComponent(Graphics) || this.boardRoot.addComponent(Graphics);
         if (background) {
             const half = BOARD_SIZE / 2;
             background.clear();
             this.roundRect(background, -half, -half, BOARD_SIZE, BOARD_SIZE, 12);
-            background.fillColor = COLOR_BOARD_BG;
+            background.fillColor = skin.boardBg;
             background.fill();
         }
 
@@ -283,12 +607,12 @@ export class GameManager extends Component {
             graphics.clear();
             this.roundRect(graphics, -transform.width / 2, -transform.height / 2,
                 transform.width, transform.height, 8);
-            graphics.fillColor = COLOR_CELL_BG;
+            graphics.fillColor = skin.cellBg;
             graphics.fill();
         }
     }
 
-    /** 绘制能量条底色；填充部分由 updateEnergy 根据当前能量重绘。 */
+    /** 绘制能量条底色并装配充能火花资源；填充部分由 updateEnergy 根据当前能量重绘。 */
     private drawEnergyBarBackground(): void {
         const graphics = this.energyBarBackground.getComponent(Graphics)
             || this.energyBarBackground.addComponent(Graphics);
@@ -298,8 +622,36 @@ export class GameManager extends Component {
         graphics.clear();
         this.roundRect(graphics, -transform.width / 2, -transform.height / 2,
             transform.width, transform.height, transform.height / 2);
-        graphics.fillColor = COLOR_ENERGY_BG;
+        graphics.fillColor = new Color(45, 35, 30);
         graphics.fill();
+
+        // 挂载生成的 23KB 精炼充能火花背景，并运行无限循环流光充能动画
+        this.loadSkinSpriteFrame('energy_spark', (sf) => {
+            if (sf && this.energyBarBackground && this.energyBarBackground.isValid) {
+                let sparkBg = this.energyBarBackground.getChildByName('SparkBg');
+                if (!sparkBg) {
+                    sparkBg = new Node('SparkBg');
+                    sparkBg.layer = Layers.Enum.UI_2D;
+                    sparkBg.setPosition(0, 0, -1);
+                    this.energyBarBackground.addChild(sparkBg);
+                    const t = sparkBg.addComponent(UITransform);
+                    t.setContentSize(transform.width + 30, transform.height + 6);
+                    const opacity = sparkBg.addComponent(UIOpacity);
+                    opacity.opacity = 180;
+
+                    // 开启持续横向流动与呼吸电感充能动画
+                    tween(sparkBg)
+                        .repeatForever(
+                            tween(sparkBg)
+                                .to(0.7, { position: new Vec3(-12, 0, -1), scale: new Vec3(1.04, 1.06, 1) })
+                                .to(0.7, { position: new Vec3(12, 0, -1), scale: new Vec3(1.0, 1.0, 1) }),
+                        )
+                        .start();
+                }
+                let sprite = sparkBg.getComponent(Sprite) || sparkBg.addComponent(Sprite);
+                sprite.spriteFrame = sf;
+            }
+        });
     }
 
     // ==================== 难度选择 ====================
@@ -540,6 +892,21 @@ export class GameManager extends Component {
         this.roundRect(g, -cs / 2, -cs / 2, cs, cs, 8);
         g.fillColor = colors.bg;
         g.fill();
+
+        // 动态加载对应皮肤资源的 SpriteFrame 增强贴图表现
+        const skin = SkinManager.instance.getEquippedSkin();
+        if (skin.resName && !tv.isBomb) {
+            resources.load(`skin/${skin.resName}/spriteFrame`, SpriteFrame, (err, sf) => {
+                if (!err && sf && tv.node && tv.node.isValid) {
+                    let sprite = tv.node.getComponent(Sprite) || tv.node.addComponent(Sprite);
+                    sprite.spriteFrame = sf;
+                    const transform = tv.node.getComponent(UITransform);
+                    if (transform) {
+                        transform.setContentSize(cs, cs);
+                    }
+                }
+            });
+        }
     }
 
     private bombColor(): { bg: Color; text: Color } {
@@ -547,8 +914,7 @@ export class GameManager extends Component {
     }
 
     private tileColor(value: number): { bg: Color; text: Color } {
-        const idx = Math.min(Math.floor(Math.log2(value)) - 1, TILE_COLORS.length - 1);
-        return TILE_COLORS[idx >= 0 ? idx : 0];
+        return SkinManager.instance.getTileStyle(value);
     }
 
     /**
@@ -699,6 +1065,13 @@ export class GameManager extends Component {
     }
 
     private updateScore(): void {
+        const diffScore = this.board.score - this.lastScore;
+        if (diffScore > 0) {
+            SkinManager.instance.addCoinsFromScore(diffScore, this.difficulty);
+            this.lastScore = this.board.score;
+        } else if (this.board.score === 0) {
+            this.lastScore = 0;
+        }
         this.scoreLabel.string = String(this.board.score);
         if (this.board.score > this.bestScore) {
             this.bestScore = this.board.score;
@@ -706,21 +1079,222 @@ export class GameManager extends Component {
         }
         this.bestLabel.string = String(this.bestScore);
         this.updateEnergy(this.board.energy, this.board.maxEnergy);
+        this.updateCoinsLabel();
+    }
+
+    private updateCoinsLabel(): void {
+        if (this.coinLabel && this.coinLabel.isValid) {
+            this.coinLabel.string = `🪙 ${SkinManager.instance.getCoins()}`;
+        }
+        if (this.shopCoinsLabel && this.shopCoinsLabel.isValid) {
+            this.shopCoinsLabel.string = `当前金币: 🪙 ${SkinManager.instance.getCoins()}`;
+        }
     }
 
     private updateEnergy(energy: number, maxEnergy: number): void {
-        const ratio = maxEnergy > 0 ? Math.max(0, Math.min(1, energy / maxEnergy)) : 0;
+        const target = maxEnergy > 0 ? Math.max(0, Math.min(1, energy / maxEnergy)) : 0;
         this.energyLabel.string = `能量 ${energy}/${maxEnergy}`;
 
+        const isIncreasing = target > this.energyShownRatio;
+
+        // 停止之前的充能动画，从当前显示比例平滑过渡到目标
+        if (this.energyTween) {
+            this.energyTween.stop();
+            this.energyTween = null;
+        }
+        const from = this.energyShownRatio;
+        const obj = { ratio: from };
+        this.energyTween = tween(obj)
+            .to(0.35, { ratio: target }, {
+                onUpdate: () => {
+                    this.energyShownRatio = obj.ratio;
+                    this.redrawEnergyFill();
+
+                    // 在平滑充能推进过程中，龙头不断吐出流光碰撞火花
+                    if (isIncreasing && Math.random() < 0.45) {
+                        const transform = this.energyBarFill.getComponent(UITransform);
+                        if (transform) {
+                            const headX = transform.width * this.energyShownRatio - transform.width / 2;
+                            this.spawnEnergySparks(new Vec3(headX, 0, 0), 4);
+                        }
+                    }
+                },
+            })
+            .call(() => {
+                this.energyShownRatio = target;
+                this.redrawEnergyFill();
+                this.energyTween = null;
+                // 充能到达终点爆出一击流光火花
+                if (isIncreasing) {
+                    const transform = this.energyBarFill.getComponent(UITransform);
+                    if (transform) {
+                        const headX = transform.width * target - transform.width / 2;
+                        this.spawnEnergySparks(new Vec3(headX, 0, 0), 16);
+                    }
+                }
+            })
+            .start();
+
+        // 满能量脉冲发光
+        this.updateEnergyPulse(target >= 1);
+    }
+
+    /** 根据当前 energyShownRatio 重绘能量条填充 */
+    private redrawEnergyFill(): void {
         const graphics = this.energyBarFill.getComponent(Graphics)
             || this.energyBarFill.addComponent(Graphics);
         const transform = this.energyBarFill.getComponent(UITransform);
         if (!graphics || !transform) return;
+
         graphics.clear();
-        this.roundRect(graphics, 0, -transform.height / 2,
-            transform.width * ratio, transform.height, transform.height / 2);
-        graphics.fillColor = ratio >= 1 ? new Color(255, 94, 59) : new Color(255, 196, 74);
+        const fillWidth = transform.width * this.energyShownRatio;
+        this.roundRect(graphics, -transform.width / 2, -transform.height / 2,
+            fillWidth, transform.height, transform.height / 2);
+        
+        // 满能量使用炽热火花橙，平时使用亮金流光色
+        graphics.fillColor = this.energyShownRatio >= 1 ? new Color(255, 94, 30) : new Color(255, 196, 40);
         graphics.fill();
+    }
+
+    /**
+     * 在能量条前端生成蹦火花/电火花爆裂粒子动画
+     */
+    private spawnEnergySparks(pos: Vec3, count: number = 14): void {
+        if (!this.energyBarFill) return;
+        const total = count + Math.floor(Math.random() * 4);
+        for (let i = 0; i < total; i++) {
+            const p = new Node('SparkParticle');
+            p.layer = Layers.Enum.UI_2D;
+            p.setPosition(pos.clone());
+            this.energyBarFill.addChild(p);
+
+            const g = p.addComponent(Graphics);
+            const radius = 2.0 + Math.random() * 3.0;
+            g.circle(0, 0, radius);
+            g.fillColor = i % 2 === 0
+                ? new Color(255, 230, 90)  // 亮金色
+                : new Color(255, 100, 30);  // 蹦火花火焰橙
+            g.fill();
+
+            // 四散冲出的随机速度与角度
+            const angle = (Math.random() * Math.PI * 2);
+            const dist = 16 + Math.random() * 32;
+            const target = new Vec3(
+                pos.x + Math.cos(angle) * dist,
+                pos.y + Math.sin(angle) * dist,
+                0,
+            );
+            const dur = 0.18 + Math.random() * 0.18;
+
+            const op = p.addComponent(UIOpacity);
+            op.opacity = 255;
+
+            tween(p)
+                .to(dur, { position: target, scale: new Vec3(0.2, 0.2, 1) })
+                .call(() => p.destroy())
+                .start();
+            tween(op)
+                .to(dur * 0.8, { opacity: 0 })
+                .start();
+        }
+    }
+
+    /** 满能量时脉冲发光与连续爆火花，不满时恢复不透明 */
+    private updateEnergyPulse(full: boolean): void {
+        if (this.energyPulseTween) {
+            this.energyPulseTween.stop();
+            this.energyPulseTween = null;
+        }
+        let opacity = this.energyBarFill.getComponent(UIOpacity);
+        if (full) {
+            if (!opacity) opacity = this.energyBarFill.addComponent(UIOpacity);
+            opacity.opacity = 255;
+            this.energyPulseTween = tween(opacity)
+                .repeatForever(
+                    tween(opacity)
+                        .to(0.35, { opacity: 120 })
+                        .call(() => {
+                            const transform = this.energyBarFill.getComponent(UITransform);
+                            if (transform) {
+                                this.spawnEnergySparks(new Vec3(transform.width / 2, 0, 0));
+                            }
+                        })
+                        .to(0.35, { opacity: 255 }),
+                )
+                .start();
+        } else if (opacity) {
+            opacity.opacity = 255;
+        }
+    }
+
+    /** 创建能量条持续粒子流承载节点，粒子用 Graphics 绘制，无需额外资源 */
+    private initEnergyParticleLayer(): void {
+        if (this.energyParticleLayer && this.energyParticleLayer.isValid) return;
+        this.energyParticleLayer = new Node('EnergyParticleLayer');
+        this.energyParticleLayer.layer = Layers.Enum.UI_2D;
+        this.energyParticleLayer.setPosition(0, 0, 0);
+        this.energyBarFill.addChild(this.energyParticleLayer);
+        this.energyParticleLayer.addComponent(UITransform);
+        this.energyParticleLayer.addComponent(Graphics);
+    }
+
+    /** 每帧驱动能量条持续粒子流：生成、移动、淡出、重绘 */
+    protected update(dt: number): void {
+        this.updateEnergyParticles(dt);
+    }
+
+    /** 维护能量条内的持续火花粒子流：数量随充能比例变化，粒子向上/向外飘散淡出 */
+    private updateEnergyParticles(dt: number): void {
+        if (!this.energyParticleLayer || !this.energyParticleLayer.isValid) return;
+        const graphics = this.energyParticleLayer.getComponent(Graphics);
+        const transform = this.energyBarFill.getComponent(UITransform);
+        if (!graphics || !transform) return;
+
+        // 粒子数量随充能比例变化：0（空）→ 30（满）
+        const targetCount = Math.floor(this.energyShownRatio * 30);
+
+        // 更新已有粒子：移动、衰减、淘汰
+        const list = this.energyParticles;
+        for (let i = list.length - 1; i >= 0; i--) {
+            const p = list[i];
+            p.life -= dt;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            // 粒子向上飘散（vy 为正，Cocos y 轴向上）
+            if (p.life <= 0) {
+                list.splice(i, 1);
+            }
+        }
+
+        // 按目标数量补充新粒子
+        while (list.length < targetCount) {
+            const fillWidth = transform.width * this.energyShownRatio;
+            const halfH = transform.height / 2;
+            const golden = Math.random() < 0.6;
+            list.push({
+                // x 范围与填充条绘制的 roundRect(-width/2, ..., fillWidth, ...) 一致
+                x: -transform.width / 2 + Math.random() * fillWidth,
+                y: (Math.random() - 0.5) * 2 * halfH,
+                vx: (Math.random() - 0.5) * 20,
+                vy: 20 + Math.random() * 40,   // 向上飘
+                size: 1.5 + Math.random() * 2.5,
+                life: 0.5 + Math.random() * 0.6,
+                maxLife: 1.1,
+                golden,
+            });
+        }
+
+        // 重绘所有粒子
+        graphics.clear();
+        for (const p of list) {
+            const ratio = Math.max(0, Math.min(1, p.life / p.maxLife));
+            const alpha = Math.floor(ratio * 255);
+            graphics.fillColor = p.golden
+                ? new Color(255, 214, 90, alpha)
+                : new Color(255, 110, 30, alpha);
+            graphics.circle(p.x, p.y, p.size);
+            graphics.fill();
+        }
     }
 
     private bestScoreKey(): string {
