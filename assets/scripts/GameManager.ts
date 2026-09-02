@@ -12,6 +12,7 @@ import {
     _decorator, Component, Node, Graphics, Label, Color, tween, Vec3,
     UITransform, sys, input, Input, EventKeyboard, KeyCode,
     EventTouch, Vec2, UIOpacity, Layers,
+    view, ResolutionPolicy,
 } from 'cc';
 import {
     BoardLogic, Difficulty, DIFFICULTY_CONFIGS, Direction, ExplosionEvent,
@@ -121,6 +122,8 @@ export class GameManager extends Component {
     private touchStart: Vec2 | null = null;
 
     protected onLoad(): void {
+        // 构建配置可能来自旧的 Creator 会话，这里再做一次运行时兜底，确保竖屏 UI 不会跑出视口。
+        view.setDesignResolutionSize(720, 1280, ResolutionPolicy.SHOW_ALL);
         this.bindSceneUI();
         this.setupSceneUI();
         this.loadBestScore();
@@ -146,8 +149,12 @@ export class GameManager extends Component {
         this.node.off(Node.EventType.TOUCH_START, this.onTouchStart, this);
         this.node.off(Node.EventType.TOUCH_END, this.onTouchEnd, this);
         // 场景加载或 onLoad 发生异常时，这些节点可能尚未绑定，销毁阶段不能再次抛错。
-        this.newGameButton?.off(Node.EventType.TOUCH_END, this.restart, this);
-        this.resultRestartButton?.off(Node.EventType.TOUCH_END, this.restart, this);
+        if (this.newGameButton?.isValid) {
+            this.newGameButton.off(Node.EventType.TOUCH_END, this.restart, this);
+        }
+        if (this.resultRestartButton?.isValid) {
+            this.resultRestartButton.off(Node.EventType.TOUCH_END, this.restart, this);
+        }
         this.moveVersion++;
     }
 
