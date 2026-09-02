@@ -480,7 +480,7 @@ export class GameManager extends Component {
             // 背景卡片
             this.drawPanel(cardNode, isEquipped ? new Color(245, 235, 215) : new Color(238, 228, 218), 12);
 
-            // ==================== 左侧皮肤大图预览区 ====================
+            // ==================== 左侧皮肤预览区（纯色块主题） ====================
             const previewNode = new Node('SkinPreview');
             previewNode.layer = Layers.Enum.UI_2D;
             previewNode.setPosition(-220, 0, 0);
@@ -490,18 +490,8 @@ export class GameManager extends Component {
             pTrans.setContentSize(90, 90);
             this.drawPanel(previewNode, skin.colors[0].bg, 10);
 
-            // 加载大图 Sprite
-            if (skin.resName) {
-                this.loadSkinSpriteFrame(skin.resName, (sf) => {
-                    if (sf && previewNode && previewNode.isValid) {
-                        let sprite = previewNode.getComponent(Sprite) || previewNode.addComponent(Sprite);
-                        sprite.spriteFrame = sf;
-                    }
-                });
-            } else {
-                // 如果没有图片资源，画基础缩略图 label
-                this.makeLabel(skin.name.substring(0, 2), 24, skin.colors[0].text, previewNode, Vec3.ZERO);
-            }
+            // 不使用图片皮肤：预览区仅保留纯色块主题，显示皮肤名缩略字
+            this.makeLabel(skin.name.substring(0, 2), 24, skin.colors[0].text, previewNode, Vec3.ZERO);
 
             // ==================== 中间信息区 ====================
             const nameLabel = this.makeLabel(skin.name, 24, COLOR_TEXT_DARK, cardNode, new Vec3(-140, 35, 0));
@@ -1006,20 +996,9 @@ export class GameManager extends Component {
         this.roundRect(g, -cs / 2, -cs / 2, cs, cs, 8);
         g.fillColor = colors.bg;
         g.fill();
-
-        // 动态加载对应皮肤资源的 SpriteFrame 增强贴图表现
-        const skin = SkinManager.instance.getEquippedSkin();
-        if (skin.resName && !tv.isBomb) {
-            resources.load(`skin/${skin.resName}/spriteFrame`, SpriteFrame, (err, sf) => {
-                if (!err && sf && tv.node && tv.node.isValid) {
-                    let sprite = tv.node.getComponent(Sprite) || tv.node.addComponent(Sprite);
-                    sprite.spriteFrame = sf;
-                    const transform = tv.node.getComponent(UITransform);
-                    if (transform) {
-                        transform.setContentSize(cs, cs);
-                    }
-                }
-            });
+        const transform = tv.node.getComponent(UITransform);
+        if (transform) {
+            transform.setContentSize(cs, cs);
         }
     }
 
