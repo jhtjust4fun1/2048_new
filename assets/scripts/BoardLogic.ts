@@ -111,12 +111,108 @@ interface SlideResult {
 const ENERGY_PER_MERGE = 20;
 const MAX_ENERGY = 100;
 
-/** 采用文档允许的九宫格爆炸范围，中心格由 resolveExplosions 保留。 */
-const BLAST_OFFSETS: Pos[] = [
-    { row: -1, col: -1 }, { row: -1, col: 0 }, { row: -1, col: 1 },
-    { row: 0, col: -1 }, { row: 0, col: 0 }, { row: 0, col: 1 },
-    { row: 1, col: -1 }, { row: 1, col: 0 }, { row: 1, col: 1 },
-];
+/**
+ * 战斗 Buff 配置，由装备称号提供。
+ * 未设置的字段使用默认值，不改变现有行为。
+ */
+export interface BoardBuffs {
+    /** 分数加成倍率（SCORE_BONUS），默认 1.0 */
+    scoreMultiplier?: number;
+    /** 额外炸弹生成概率（BOMB_PROB），默认 0 */
+    bombProb?: number;
+    /** 爆炸范围扩大格数（BOMB_RANGE），默认 0（3x3 九宫格） */
+    bombRangeExtra?: number;
+    /** 被炸方块得分倍率（BOMB_SCORE_MULT），默认 1.0 */
+    bombScoreMultiplier?: number;
+    /** 爆炸不毁方块只加分的概率（BOMB_NO_DESTROY），默认 0 */
+    bombNoDestroyProb?: number;
+
+    // === SSR/UR 专属复合机制 ===
+    /** 单步移动合并数 ≥3 时，额外奖励金币数（COMBO_GOLD_BONUS），默认 0 */
+    comboGoldBonus?: number;
+    /** 每次合成时原地掉落金币的概率（MERGE_GOLD_DROP），默认 0 */
+    mergeGoldDropProb?: number;
+    /** 爆炸后引力吸入全屏最小同值方块合并（GRAVITY_MERGE），默认 false */
+    gravityMerge?: boolean;
+    /** 每局免费撤销步数（UNDO_COUNT），默认 0 */
+    undoCount?: number;
+    /** 开局随机两格直升为 16（INITIAL_BOOST），默认 false */
+    initialBoost?: boolean;
+    /** 波及同值方块时追加十字冲击波（CHAIN_EXPLOSION），默认 false */
+    chainExplosion?: boolean;
+    /** 爆炸触发连环爆破，清屏所有 ≤N 的方块（CLEAR_SMALL_TILES），默认 0 禁用 */
+    clearSmallThreshold?: number;
+    /** 空格不足 3 个时暂停生成方块的可用次数（PAUSE_SPAWN），默认 0 */
+    pauseSpawnUses?: number;
+    /** 空格不足 4 个时激活绝对领域、奇数位同化的可用次数（ABSOLUTE_DOMAIN），默认 0 */
+    absoluteDomainUses?: number;
+    /** 新方块保底数值（MIN_SPAWN_VALUE），默认 0 不限制 */
+    minSpawnValue?: number;
+    /** 生成 8 的额外概率（SPAWN_8_PROB），默认 0 */
+    spawn8Prob?: number;
+    /** 合成出 2048 时返还金币数（WIN_2048_REWARD），默认 0 */
+    win2048Reward?: number;
+    /** 连击得分额外倍率（COMBO_SCORE_MULT），默认 1.0 */
+    comboScoreMultiplier?: number;
+    /** 卡死濒死时自动回溯清杂的可用次数（GAME_OVER_PREVENT），默认 0 */
+    gameOverPreventUses?: number;
+}
+
+/** 引力吸入合并事件（灭世奇点）：两个最小同值方块被吸入合并 */
+export interface GravityMergeEvent {
+    from: Pos[];
+    to: Pos;
+    value: number;
+}
+
+/** 奇数位同化事件（熵寂主宰） */
+export interface AbsoluteDomainEvent {
+    positions: Pos[];
+    value: number;
+}
+
+export interface MoveResult {
+    moves: TileMove[];
+    explosions: ExplosionEvent[];
+    combo: number;
+    energy: number;
+    maxEnergy: number;
+    bombNextSpawn: boolean;
+
+    // === SSR/UR 专属机制的返回值 ===
+    /** 连击奖励金币数（黄金点金手），默认 0 */
+    comboGoldBonus?: number;
+    /** 合成掉落金币总数（无尽财阀），默认 0 */
+    goldDrops?: number;
+    /** 引力吸入合并（灭世奇点），无则不返回 */
+    gravityMerge?: GravityMergeEvent;
+    /** 十字冲击波附加爆炸（裂变源点），并入 explosions 渲染，此字段供提示 */
+    chainTriggered?: boolean;
+    /** 清屏所有 ≤N 的方块（超新星爆裂），无则不返回 */
+    smallClearCount?: number;
+    /** 合成出 2048 触发的通关返利金币（创世主脑），默认 0 */
+    win2048Reward?: number;
+    /** 本步是否触发了卡死回溯（因果掌控者） */
+    gameOverPrevented?: boolean;
+    /** 本步是否暂停生成新方块（绝对零度） */
+    pausedSpawn?: boolean;
+    /** 奇数位同化（熵寂主宰），无则不返回 */
+    absoluteDomain?: AbsoluteDomainEvent;
+    /** 本次移动后棋盘仍可继续的剩余暂停次数（绝对零度），便于 UI 展示 */
+    pauseSpawnLeft?: number;
+}
+
+/** 生成指定半径的格点偏移（Chebyshev 距离），不含中心(0,0)。 */
+function blastOffsets(radius: number): Pos[] {
+    const offsets: Pos[] = [];
+    for (let row = -radius; row <= radius; row++) {
+        for (let col = -radius; col <= radius; col++) {
+            if (row === 0 && col === 0) continue;
+            offsets.push({ row, col });
+        }
+    }
+    return offsets;
+}
 
 export class BoardLogic {
     public readonly size: number;
@@ -128,9 +224,25 @@ export class BoardLogic {
     /** 能量满或 Combo 达标后，下一次生成的方块会成为炸弹。 */
     public bombNextSpawn: boolean;
 
+    private readonly buffs: Required<BoardBuffs>;
+
     private nextTileId = 1;
 
-    public constructor(size: number = 4, difficulty: Difficulty = 'easy') {
+    // === SSR/UR 机制的每局状态 ===
+    /** 本局剩余撤销次数（时空折叠者） */
+    private undoLeft = 0;
+    /** 本局剩余暂停生成次数（绝对零度） */
+    private pauseSpawnLeft = 0;
+    /** 本局剩余绝对领域次数（熵寂主宰） */
+    private absoluteDomainLeft = 0;
+    /** 本局剩余卡死回溯次数（因果掌控者） */
+    private gameOverPreventLeft = 0;
+    /** 已合成出 2048 并发放过返利（创世主脑，每局一次） */
+    private win2048Rewarded = false;
+    /** 撤销用的棋盘快照栈（最近一步在前） */
+    private history: { grid: TileData[][]; score: number; energy: number; bombNextSpawn: boolean }[] = [];
+
+    public constructor(size: number = 4, difficulty: Difficulty = 'easy', buffs: BoardBuffs = {}) {
         if (!Number.isInteger(size) || size < 2) {
             throw new Error('棋盘尺寸必须是大于等于 2 的整数');
         }
@@ -139,6 +251,27 @@ export class BoardLogic {
         }
         this.size = size;
         this.difficulty = difficulty;
+        this.buffs = {
+            scoreMultiplier: buffs.scoreMultiplier ?? 1.0,
+            bombProb: buffs.bombProb ?? 0,
+            bombRangeExtra: buffs.bombRangeExtra ?? 0,
+            bombScoreMultiplier: buffs.bombScoreMultiplier ?? 1.0,
+            bombNoDestroyProb: buffs.bombNoDestroyProb ?? 0,
+            comboGoldBonus: buffs.comboGoldBonus ?? 0,
+            mergeGoldDropProb: buffs.mergeGoldDropProb ?? 0,
+            gravityMerge: buffs.gravityMerge ?? false,
+            undoCount: buffs.undoCount ?? 0,
+            initialBoost: buffs.initialBoost ?? false,
+            chainExplosion: buffs.chainExplosion ?? false,
+            clearSmallThreshold: buffs.clearSmallThreshold ?? 0,
+            pauseSpawnUses: buffs.pauseSpawnUses ?? 0,
+            absoluteDomainUses: buffs.absoluteDomainUses ?? 0,
+            minSpawnValue: buffs.minSpawnValue ?? 0,
+            spawn8Prob: buffs.spawn8Prob ?? 0,
+            win2048Reward: buffs.win2048Reward ?? 0,
+            comboScoreMultiplier: buffs.comboScoreMultiplier ?? 1.0,
+            gameOverPreventUses: buffs.gameOverPreventUses ?? 0,
+        };
         this.grid = [];
         this.score = 0;
         this.energy = 0;
@@ -155,8 +288,132 @@ export class BoardLogic {
         this.score = 0;
         this.energy = 0;
         this.bombNextSpawn = false;
-        this.spawnTile();
-        this.spawnTile();
+        this.undoLeft = this.buffs.undoCount;
+        this.pauseSpawnLeft = this.buffs.pauseSpawnUses;
+        this.absoluteDomainLeft = this.buffs.absoluteDomainUses;
+        this.gameOverPreventLeft = this.buffs.gameOverPreventUses;
+        this.win2048Rewarded = false;
+        this.history = [];
+        this.spawnTile(false);
+        this.spawnTile(false);
+        // 开局升格（时空折叠者）：开局两个格子直升为 16
+        if (this.buffs.initialBoost) {
+            let upgraded = 0;
+            for (let row = 0; row < this.size && upgraded < 2; row++) {
+                for (let col = 0; col < this.size && upgraded < 2; col++) {
+                    const tile = this.grid[row][col];
+                    if (tile.value > 0) {
+                        tile.value = 16;
+                        tile.isBomb = undefined;
+                        upgraded++;
+                    }
+                }
+            }
+        }
+    }
+
+    // ==================== SSR/UR 机制对外接口 ====================
+
+    /** 时空折叠者：本局剩余撤销次数 */
+    public getUndoLeft(): number {
+        return this.undoLeft;
+    }
+
+    /** 时空折叠者：撤销上一步。成功返回 true 并恢复棋盘、分数、能量。 */
+    public undo(): boolean {
+        if (this.undoLeft <= 0 || this.history.length === 0) return false;
+        const snap = this.history.shift()!;
+        this.grid = snap.grid;
+        this.score = snap.score;
+        this.energy = snap.energy;
+        this.bombNextSpawn = snap.bombNextSpawn;
+        this.undoLeft--;
+        return true;
+    }
+
+    /** 绝对零度：空格不足 3 个时尝试暂停生成。成功（消耗次数）返回 true。 */
+    public tryPauseSpawn(): boolean {
+        if (this.pauseSpawnLeft <= 0) return false;
+        if (this.emptyCells().length >= 3) return false;
+        this.pauseSpawnLeft--;
+        return true;
+    }
+
+    /** 熵寂主宰：空格不足 4 个时激活绝对领域——所有奇数位方块同化为奇数位最大数。成功返回 true。 */
+    public tryActivateAbsoluteDomain(): boolean {
+        if (this.absoluteDomainLeft <= 0) return false;
+        if (this.emptyCells().length >= 4) return false;
+        let oddMax = 0;
+        let oddCount = 0;
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                if ((row + col) % 2 === 1) {
+                    const v = this.grid[row][col].value;
+                    if (v > 0) {
+                        oddCount++;
+                        if (v > oddMax) oddMax = v;
+                    }
+                }
+            }
+        }
+        // 至少要有两个奇数位方块且不是全部相同，同化才有意义
+        if (oddCount < 2 || oddMax === 0) return false;
+        let allSame = true;
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                if ((row + col) % 2 === 1 && this.grid[row][col].value > 0
+                    && this.grid[row][col].value !== oddMax) {
+                    allSame = false;
+                    break;
+                }
+            }
+        }
+        if (allSame) return false;
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                if ((row + col) % 2 === 1 && this.grid[row][col].value > 0) {
+                    this.grid[row][col].value = oddMax;
+                    this.grid[row][col].isBomb = undefined;
+                }
+            }
+        }
+        this.absoluteDomainLeft--;
+        return true;
+    }
+
+    /** 因果掌控者：棋盘卡死且仍有可用次数时，清除全屏所有 2/4 并将剩余方块随机重排。成功返回 true。 */
+    public tryGameOverPrevent(): boolean {
+        if (this.gameOverPreventLeft <= 0) return false;
+        if (!this.isGameOver()) return false;
+        const survivors: TileData[] = [];
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                const tile = this.grid[row][col];
+                if (tile.value > 0 && tile.value > 4) survivors.push(tile);
+            }
+        }
+        if (survivors.length === 0 || survivors.length >= this.size * this.size) return false;
+        // 清空棋盘，把幸存方块随机打散到所有格子
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                this.grid[row][col] = this.emptyTile();
+            }
+        }
+        const cells = this.emptyCells();
+        for (const tile of survivors) {
+            const idx = Math.floor(Math.random() * cells.length);
+            const pos = cells.splice(idx, 1)[0];
+            this.grid[pos.row][pos.col] = tile;
+        }
+        this.gameOverPreventLeft--;
+        return true;
+    }
+
+    /** 创世主脑：返回合成 2048 时触发通关奖励的金币数（每局一次） */
+    public consumeWin2048Reward(): number {
+        if (this.win2048Rewarded || this.buffs.win2048Reward <= 0) return 0;
+        this.win2048Rewarded = true;
+        return this.buffs.win2048Reward;
     }
 
     public emptyCells(): Pos[] {
@@ -170,22 +427,53 @@ export class BoardLogic {
     }
 
     /** 在随机空格生成普通 2/4/8 或待生成的炸弹方块。 */
-    public spawnTile(): Pos | null {
+    public spawnTile(allowRandomBomb: boolean = true): Pos | null {
         const cells = this.emptyCells();
         if (cells.length === 0) return null;
 
         const pos = cells[Math.floor(Math.random() * cells.length)];
-        const isBomb = this.bombNextSpawn;
-        
-        // 根据难度权重计算本次生成的数值
-        const rand = Math.random();
-        let cumulative = 0;
+        // 炸弹来源一：combo/能量触发的必出炸弹
+        let isBomb = this.bombNextSpawn;
+        // 炸弹来源二：称号 BOMB_PROB 独立随机路径（默认概率 0，不改变无称号基线）
+        if (!isBomb && allowRandomBomb && this.buffs.bombProb > 0 && Math.random() < this.buffs.bombProb) {
+            isBomb = true;
+        }
+
+        // 数值保底（MIN_SPAWN_VALUE）：剔除低于保底值的权重项，并重新归一化
+        const minValue = this.buffs.minSpawnValue;
+        let weights = this.config.spawnWeights;
         let spawnValue = 2;
-        for (const item of this.config.spawnWeights) {
-            cumulative += item.prob;
-            if (rand <= cumulative) {
-                spawnValue = item.value;
-                break;
+        if (minValue > 0) {
+            const filtered = weights.filter((item) => item.value >= minValue);
+            if (filtered.length > 0) {
+                const total = filtered.reduce((sum, item) => sum + item.prob, 0);
+                weights = filtered.map((item) => ({ value: item.value, prob: item.prob / total }));
+                const rand = Math.random();
+                let cumulative = 0;
+                for (const item of weights) {
+                    cumulative += item.prob;
+                    if (rand <= cumulative) {
+                        spawnValue = item.value;
+                        break;
+                    }
+                }
+            } else {
+                spawnValue = minValue;
+            }
+            // 创世主脑：额外 20% 概率生成 8
+            if (this.buffs.spawn8Prob > 0 && Math.random() < this.buffs.spawn8Prob) {
+                spawnValue = 8;
+            }
+        } else {
+            // 无保底时维持原难度权重逻辑
+            const rand = Math.random();
+            let cumulative = 0;
+            for (const item of weights) {
+                cumulative += item.prob;
+                if (rand <= cumulative) {
+                    spawnValue = item.value;
+                    break;
+                }
             }
         }
 
@@ -263,7 +551,8 @@ export class BoardLogic {
             };
         }
 
-        this.score += realMoves.reduce((total, move) => total + (move.merged ? move.value : 0), 0);
+        const mergedScore = realMoves.reduce((total, move) => total + (move.merged ? move.value : 0), 0);
+        this.score += Math.floor(mergedScore * this.buffs.scoreMultiplier);
         this.energy = Math.min(this.maxEnergy, this.energy + combo * this.config.energyPerMerge);
         if (combo >= this.config.comboForBomb || this.energy >= this.maxEnergy) this.bombNextSpawn = true;
 
@@ -426,14 +715,23 @@ export class BoardLogic {
     private resolveExplosions(moves: TileMove[]): ExplosionEvent[] {
         const explosions: ExplosionEvent[] = [];
         const destroyedIds = new Set<number>();
+        // 爆炸半径 = 基础 1 格（3x3）+ 称号 BOMB_RANGE 加成
+        const radius = 1 + this.buffs.bombRangeExtra;
+        const offsets = radius === 1
+            ? blastOffsets(1)
+            : blastOffsets(Math.max(1, Math.floor(radius)));
 
         for (const move of moves) {
             if (!move.merged || !move.bombTriggered) continue;
 
+            // BOMB_NO_DESTROY：该次爆炸不毁方块只加分
+            const noDestroy = this.buffs.bombNoDestroyProb > 0
+                && Math.random() < this.buffs.bombNoDestroyProb;
+
             const targetPositions: Pos[] = [];
             const targetIds: number[] = [];
             let scoreGained = 0;
-            for (const offset of BLAST_OFFSETS) {
+            for (const offset of offsets) {
                 const row = move.to.row + offset.row;
                 const col = move.to.col + offset.col;
                 if (row < 0 || row >= this.size || col < 0 || col >= this.size) continue;
@@ -445,15 +743,18 @@ export class BoardLogic {
                 targetIds.push(tile.id);
                 scoreGained += tile.value * 2;
                 destroyedIds.add(tile.id);
-                this.grid[row][col] = this.emptyTile();
+                if (!noDestroy) {
+                    this.grid[row][col] = this.emptyTile();
+                }
             }
 
-            this.score += scoreGained;
+            this.score += Math.floor(scoreGained * this.buffs.bombScoreMultiplier);
+            // BOMB_NO_DESTROY：方块仍在棋盘上，不向 UI 提供销毁目标
             explosions.push({
                 center: { row: move.to.row, col: move.to.col },
                 value: move.value,
-                targetPositions,
-                targetIds,
+                targetPositions: noDestroy ? [] : targetPositions,
+                targetIds: noDestroy ? [] : targetIds,
                 scoreGained,
             });
         }

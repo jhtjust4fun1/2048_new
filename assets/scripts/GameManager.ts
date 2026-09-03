@@ -16,10 +16,11 @@ import {
 } from 'cc';
 import {
     BoardLogic, Difficulty, DIFFICULTY_CONFIGS, Direction, ExplosionEvent,
-    MoveResult, TileData, TileMove,
+    MoveResult, TileData, TileMove, BoardBuffs,
 } from './BoardLogic';
 import { SkinManager, SKIN_CONFIGS, SkinConfig } from './SkinManager';
 import { AdManager } from './AdManager';
+import { TitleManager, BuffType, TitleConfig, formatBuffText } from './TitleManager';
 
 const { ccclass, property } = _decorator;
 
@@ -130,6 +131,9 @@ export class GameManager extends Component {
     private shopOverlay!: Node;
     private shopPanel!: Node;
     private shopCoinsLabel!: Label;
+    private titleButton!: Node;
+    private titleOverlay!: Node;
+    private titlePanel!: Node;
     private lastScore = 0;
     private coinsEarnedThisGame = 0;
     private hasRevivedThisGame = false;
@@ -255,6 +259,10 @@ export class GameManager extends Component {
         this.createCoinUI();
         this.createAdEnergyButton();
         this.buildShopOverlayUI();
+        this.createTitleButton();
+        this.buildTitleOverlayUI();
+        // 提前预热称号配置加载（标题 UI 构建时即触发，避免进入面板后等待）
+        TitleManager.instance.ensureLoadOnce();
     }
 
     private createCoinUI(): void {
@@ -313,6 +321,33 @@ export class GameManager extends Component {
         }
 
         this.updateCoinsLabel();
+    }
+
+    /** 创建顶部称号入口按钮（与商店按钮成组，位于其左侧） */
+    private createTitleButton(): void {
+        let titleBtn = this.node.getChildByName('TitleButton');
+        if (!titleBtn) {
+            titleBtn = new Node('TitleButton');
+            titleBtn.layer = Layers.Enum.UI_2D;
+            titleBtn.setPosition(100, 565, 0);
+            this.node.addChild(titleBtn);
+            const transform = titleBtn.addComponent(UITransform);
+            transform.setContentSize(120, 56);
+            this.drawPanel(titleBtn, new Color(150, 110, 220), 10);
+
+            const labelNode = new Node('Label');
+            labelNode.layer = Layers.Enum.UI_2D;
+            titleBtn.addChild(labelNode);
+            const btnLabel = labelNode.addComponent(Label);
+            btnLabel.string = '🏆 称号';
+            btnLabel.fontSize = 20;
+            btnLabel.color = COLOR_TEXT_LIGHT;
+
+            this.titleButton = titleBtn;
+            titleBtn.on(Node.EventType.TOUCH_END, this.openTitle, this);
+        } else {
+            this.titleButton = titleBtn;
+        }
     }
 
     private addPanelTitle(panel: Node, title: string): void {
@@ -600,6 +635,502 @@ export class GameManager extends Component {
         }
     }
 
+    // ==================== 称号系统 ====================
+
+    private titleTab: 'gacha' | 'inventory' | 'catalog' = 'gacha';
+    /** 图鉴分页（每页 8 个称号） */
+    private catalogPage = 0;
+    private titleContentContainer!: Node;
+
+    private buildTitleOverlayUI(): void {
+        if (this.titleOverlay && this.titleOverlay.isValid) return;
+
+        this.titleOverlay = new Node('TitleOverlay');
+        this.titleOverlay.layer = Layers.Enum.UI_2D;
+        this.node.addChild(this.titleOverlay);
+        const transform = this.titleOverlay.addComponent(UITransform);
+        transform.setContentSize(720, 1280);
+        this.titleOverlay.addComponent(UIOpacity);
+        this.drawOverlayMask(this.titleOverlay);
+
+        this.titlePanel = new Node('Panel');
+        this.titlePanel.layer = Layers.Enum.UI_2D;
+        this.titleOverlay.addChild(this.titlePanel);
+        const panelTrans = this.titlePanel.addComponent(UITransform);
+        panelTrans.setContentSize(640, 880);
+        this.drawPanel(this.titlePanel, new Color(250, 248, 239), 16);
+
+        this.makeLabel('称号系统', 36, COLOR_TEXT_DARK, this.titlePanel, new Vec3(0, 390, 0));
+
+        const closeBtn = new Node('CloseButton');
+        closeBtn.layer = Layers.Enum.UI_2D;
+        closeBtn.setPosition(270, 390, 0);
+        this.titlePanel.addChild(closeBtn);
+        const closeTrans = closeBtn.addComponent(UITransform);
+        closeTrans.setContentSize(46, 46);
+        this.drawPanel(closeBtn, new Color(214, 70, 48), 23);
+        this.makeLabel('✕', 26, COLOR_TEXT_LIGHT, closeBtn, Vec3.ZERO);
+        closeBtn.on(Node.EventType.TOUCH_END, () => {
+            this.titleOverlay.active = false;
+            if (!this.difficultyOverlay.active && !this.resultOverlay.active) {
+                AdManager.instance.hideBanner();
+            }
+        }, this);
+
+        // 标签页：抽卡 / 背包
+        const tabBar = new Node('TabBar');
+        tabBar.layer = Layers.Enum.UI_2D;
+        tabBar.setPosition(0, 340, 0);
+        this.titlePanel.addChild(tabBar);
+
+        const tabs = ['gacha', 'inventory', 'catalog'] as const;
+        const tabLabels = ['🎴 抽卡', '🎒 背包', '📖 图鉴'];
+        tabs.forEach((tab, i) => {
+            const btn = new Node(`Tab_${tab}`);
+            btn.layer = Layers.Enum.UI_2D;
+            btn.setPosition(-190 + i * 190, 0, 0);
+            tabBar.addChild(btn);
+            const btnTrans = btn.addComponent(UITransform);
+            btnTrans.setContentSize(180, 48);
+            this.drawPanel(btn, new Color(220, 210, 200), 8);
+            this.makeLabel(tabLabels[i], 22, COLOR_TEXT_DARK, btn, Vec3.ZERO);
+            btn.on(Node.EventType.TOUCH_END, () => {
+                this.titleTab = tab;
+                this.refreshTitleUI();
+            }, this);
+        });
+
+        // 内容容器（每次刷新时清空重建）
+        this.titleContentContainer = new Node('ContentContainer');
+        this.titleContentContainer.layer = Layers.Enum.UI_2D;
+        this.titleContentContainer.setPosition(0, -30, 0);
+        this.titlePanel.addChild(this.titleContentContainer);
+
+        this.titleOverlay.active = false;
+    }
+
+    private refreshTitleUI(): void {
+        if (!this.titleContentContainer || !this.titleContentContainer.isValid) return;
+        // 清除旧内容
+        this.titleContentContainer.children.forEach((c) => c.destroy());
+        this.titleContentContainer.removeAllChildren();
+
+        if (this.titleTab === 'gacha') {
+            this.buildGachaTab();
+        } else if (this.titleTab === 'inventory') {
+            this.buildInventoryTab();
+        } else {
+            this.buildCatalogTab();
+        }
+    }
+
+    private buildGachaTab(): void {
+        const container = this.titleContentContainer;
+
+        // 金币显示
+        this.makeLabel(
+            `🪙 ${SkinManager.instance.getCoins()}`,
+            22,
+            new Color(215, 140, 0),
+            container,
+            new Vec3(0, 280, 0),
+        );
+
+        // 广告免费抽剩余次数
+        const freeLeft = TitleManager.instance.getFreeAdLeftToday();
+        const freeHint = this.makeLabel(
+            `📺 免费抽：今日剩余 ${freeLeft} / ${TitleManager.instance.dailyFreeAdLimit} 次`,
+            18,
+            new Color(160, 150, 140),
+            container,
+            new Vec3(0, 240, 0),
+        );
+
+        // 单抽按钮
+        const singleBtn = new Node('SingleGacha');
+        singleBtn.layer = Layers.Enum.UI_2D;
+        singleBtn.setPosition(0, 180, 0);
+        container.addChild(singleBtn);
+        const singleTrans = singleBtn.addComponent(UITransform);
+        singleTrans.setContentSize(200, 56);
+        this.drawPanel(singleBtn, new Color(150, 110, 220), 10);
+        this.makeLabel(`抽 1 次 (${TitleManager.instance.gachaPrice}🪙)`, 20, COLOR_TEXT_LIGHT, singleBtn, Vec3.ZERO);
+        singleBtn.on(Node.EventType.TOUCH_END, () => {
+            const result = TitleManager.instance.gachaOnce();
+            if (result) {
+                this.showGachaResult([result]);
+                this.refreshTitleUI();
+            } else {
+                this.showToast('金币不足！');
+            }
+        }, this);
+
+        // 免费广告抽按钮
+        const freeBtn = new Node('FreeAdGacha');
+        freeBtn.layer = Layers.Enum.UI_2D;
+        freeBtn.setPosition(0, 110, 0);
+        container.addChild(freeBtn);
+        const freeTrans = freeBtn.addComponent(UITransform);
+        freeTrans.setContentSize(200, 56);
+        this.drawPanel(freeBtn, new Color(40, 160, 80), 10);
+        this.makeLabel(freeLeft > 0 ? '🎬 免费广告抽' : '今日已用完', 20, COLOR_TEXT_LIGHT, freeBtn, Vec3.ZERO);
+        freeBtn.on(Node.EventType.TOUCH_END, async () => {
+            if (TitleManager.instance.getFreeAdLeftToday() <= 0) {
+                this.showToast('今日免费次数已用完！');
+                return;
+            }
+            const success = await AdManager.instance.showRewardedVideo('title_free_gacha');
+            if (success) {
+                const result = TitleManager.instance.gachaFreeAd();
+                if (result) {
+                    this.showGachaResult([result]);
+                    this.refreshTitleUI();
+                }
+            }
+        }, this);
+
+        // 十连按钮
+        const tenBtn = new Node('TenGacha');
+        tenBtn.layer = Layers.Enum.UI_2D;
+        tenBtn.setPosition(0, 40, 0);
+        container.addChild(tenBtn);
+        const tenTrans = tenBtn.addComponent(UITransform);
+        tenTrans.setContentSize(200, 56);
+        this.drawPanel(tenBtn, new Color(200, 120, 40), 10);
+        this.makeLabel(`十连 (${TitleManager.instance.gachaPrice * TitleManager.instance.gachaTenCount}🪙)`, 20, COLOR_TEXT_LIGHT, tenBtn, Vec3.ZERO);
+        tenBtn.on(Node.EventType.TOUCH_END, () => {
+            const results = TitleManager.instance.gachaTen(false);
+            if (results.length > 0) {
+                this.showGachaResult(results);
+                this.refreshTitleUI();
+            } else {
+                this.showToast('金币不足！');
+            }
+        }, this);
+
+        // 广告十连半价按钮
+        const adTenBtn = new Node('AdTenGacha');
+        adTenBtn.layer = Layers.Enum.UI_2D;
+        adTenBtn.setPosition(0, -30, 0);
+        container.addChild(adTenBtn);
+        const adTenTrans = adTenBtn.addComponent(UITransform);
+        adTenTrans.setContentSize(200, 48);
+        this.drawPanel(adTenBtn, new Color(60, 140, 60), 8);
+        this.makeLabel('🎬 广告十连半价', 18, COLOR_TEXT_LIGHT, adTenBtn, Vec3.ZERO);
+        adTenBtn.on(Node.EventType.TOUCH_END, async () => {
+            const success = await AdManager.instance.showRewardedVideo('title_ten_half');
+            if (success) {
+                const results = TitleManager.instance.gachaTen(true);
+                if (results.length > 0) {
+                    this.showGachaResult(results);
+                    this.refreshTitleUI();
+                } else {
+                    this.showToast('金币不足！');
+                }
+            }
+        }, this);
+
+        // 当前装备提示
+        const equipped = TitleManager.instance.getEquippedTitle();
+        if (equipped) {
+            this.makeLabel(
+                `当前装备：${equipped.name}`,
+                18,
+                new Color(100, 90, 80),
+                container,
+                new Vec3(0, -100, 0),
+            );
+        }
+    }
+
+    private buildInventoryTab(): void {
+        const container = this.titleContentContainer;
+        const items = TitleManager.instance.getInventory();
+        const equippedId = TitleManager.instance.getEquippedTitleId();
+
+        if (items.length === 0) {
+            this.makeLabel('暂无称号，快去抽卡吧！', 22, new Color(150, 140, 130), container, new Vec3(0, 200, 0));
+            return;
+        }
+
+        const startY = 260;
+        const cardHeight = 80;
+        const gap = 10;
+        const maxVisible = Math.min(items.length, 8);
+
+        for (let i = 0; i < maxVisible; i++) {
+            const { config, count } = items[i];
+            const y = startY - i * (cardHeight + gap);
+            const card = new Node(`TitleCard_${config.id}`);
+            card.layer = Layers.Enum.UI_2D;
+            card.setPosition(0, y, 0);
+            container.addChild(card);
+            const cardTrans = card.addComponent(UITransform);
+            cardTrans.setContentSize(570, cardHeight);
+            const isEquipped = config.id === equippedId;
+            this.drawPanel(card, isEquipped ? new Color(235, 225, 210) : new Color(238, 228, 218), 10);
+
+            // 称号名称（左对齐，与图鉴页一致的左缘 -240，下方 Buff 行同左缘）
+            const nameText = `${config.name} x${count}`;
+            const nameLabel = this.makeLabel(nameText, 20, COLOR_TEXT_DARK, card, new Vec3(-240, 15, 0));
+            nameLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
+            this.clampLabelToCard(nameLabel, 450, -240);
+
+            // 稀有度色标
+            const rarityColors: Record<string, Color> = {
+                N: new Color(158, 158, 158),
+                R: new Color(74, 144, 217),
+                SR: new Color(155, 89, 208),
+                SSR: new Color(242, 179, 15),
+                UR: new Color(227, 74, 74),
+            };
+            const rarityColor = rarityColors[config.rarity] || new Color(200, 190, 180);
+            const rarityNode = new Node('RarityTag');
+            rarityNode.layer = Layers.Enum.UI_2D;
+            // 按名称文本宽度估算色标位置，使其紧贴名称右侧（中文≈字号宽，ASCII≈0.55 字号宽）
+            let nameWidth = 0;
+            for (const ch of nameText) {
+                nameWidth += ch.charCodeAt(0) > 255 ? 20 : 11;
+            }
+            const rarityX = Math.min(-240 + nameWidth + 8 + 30, 120);
+            rarityNode.setPosition(rarityX, 15, 0);
+            card.addChild(rarityNode);
+            const rarityTrans = rarityNode.addComponent(UITransform);
+            rarityTrans.setContentSize(60, 24);
+            this.drawPanel(rarityNode, rarityColor, 6);
+            this.makeLabel(config.rarity, 16, COLOR_TEXT_LIGHT, rarityNode, Vec3.ZERO);
+
+            // 称号 Buff 效果（复用图鉴格式，左缘与名称一致，限制宽度防止溢出卡片）
+            const buffLabel = this.makeLabel(
+                `✨ ${formatBuffText(config.buffType, config.buffValue)}`,
+                15,
+                new Color(180, 110, 30),
+                card,
+                new Vec3(-240, -22, 0),
+            );
+            buffLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
+            this.clampLabelToCard(buffLabel, 360, -240);
+
+            // 装备/卸下按钮
+            if (!isEquipped) {
+                const equipBtn = new Node('EquipBtn');
+                equipBtn.layer = Layers.Enum.UI_2D;
+                equipBtn.setPosition(230, 0, 0);
+                card.addChild(equipBtn);
+                const eqTrans = equipBtn.addComponent(UITransform);
+                eqTrans.setContentSize(80, 40);
+                this.drawPanel(equipBtn, new Color(100, 180, 100), 8);
+                this.makeLabel('装备', 18, COLOR_TEXT_LIGHT, equipBtn, Vec3.ZERO);
+                equipBtn.on(Node.EventType.TOUCH_END, () => {
+                    TitleManager.instance.equipTitle(config.id);
+                    this.refreshTitleUI();
+                }, this);
+            } else {
+                const unequipBtn = new Node('UnequipBtn');
+                unequipBtn.layer = Layers.Enum.UI_2D;
+                unequipBtn.setPosition(230, 0, 0);
+                card.addChild(unequipBtn);
+                const ueqTrans = unequipBtn.addComponent(UITransform);
+                ueqTrans.setContentSize(80, 40);
+                this.drawPanel(unequipBtn, new Color(180, 160, 140), 8);
+                this.makeLabel('已装备', 18, COLOR_TEXT_LIGHT, unequipBtn, Vec3.ZERO);
+            }
+
+            // SSR 合成按钮
+            if (config.rarity === 'SSR' && TitleManager.instance.canAscend(config.id)) {
+                const ascendBtn = new Node('AscendBtn');
+                ascendBtn.layer = Layers.Enum.UI_2D;
+                ascendBtn.setPosition(310, 0, 0);
+                card.addChild(ascendBtn);
+                const ascTrans = ascendBtn.addComponent(UITransform);
+                ascTrans.setContentSize(80, 40);
+                this.drawPanel(ascendBtn, new Color(230, 150, 40), 8);
+                this.makeLabel('合成UR', 18, COLOR_TEXT_LIGHT, ascendBtn, Vec3.ZERO);
+                ascendBtn.on(Node.EventType.TOUCH_END, () => {
+                    const ur = TitleManager.instance.ascend(config.id);
+                    if (ur) {
+                        this.showToast(`🎉 合成成功！获得 ${ur.name}`);
+                        this.refreshTitleUI();
+                    }
+                }, this);
+            }
+        }
+    }
+
+    /** 图鉴页：展示全部称号（配置表驱动，含 Buff 与描述），每页 8 个 */
+    private buildCatalogTab(): void {
+        const container = this.titleContentContainer;
+
+        const all = TitleManager.instance.getAllConfigs();
+        // 按稀有度排序：N < R < SR < SSR < UR
+        const rarityRank: Record<string, number> = { N: 0, R: 1, SR: 2, SSR: 3, UR: 4 };
+        all.sort((a, b) => (rarityRank[a.rarity] - rarityRank[b.rarity]) || a.id.localeCompare(b.id));
+
+        const equippedId = TitleManager.instance.getEquippedTitleId();
+        const pageSize = 6;
+        const pageCount = Math.max(1, Math.ceil(all.length / pageSize));
+        this.catalogPage = Math.max(0, Math.min(this.catalogPage, pageCount - 1));
+        const startIdx = this.catalogPage * pageSize;
+        const pageTitles = all.slice(startIdx, startIdx + pageSize);
+
+        const rarityColors: Record<string, Color> = {
+            N: new Color(158, 158, 158),
+            R: new Color(74, 144, 217),
+            SR: new Color(155, 89, 208),
+            SSR: new Color(242, 179, 15),
+            UR: new Color(227, 74, 74),
+        };
+
+        // 标题栏：总览
+        this.makeLabel(`称号图鉴（共 ${all.length} 个）`, 22, COLOR_TEXT_DARK, container, new Vec3(0, 300, 0));
+
+        const startY = 250;
+        const cardHeight = 88;
+        const gap = 10;
+
+        pageTitles.forEach((config, i) => {
+            const y = startY - i * (cardHeight + gap);
+            const card = new Node(`CatalogCard_${config.id}`);
+            card.layer = Layers.Enum.UI_2D;
+            card.setPosition(0, y, 0);
+            container.addChild(card);
+            const cardTrans = card.addComponent(UITransform);
+            cardTrans.setContentSize(570, cardHeight);
+            const isEquipped = config.id === equippedId;
+            const ownedCount = TitleManager.instance.getOwnedCount(config.id);
+            this.drawPanel(card, isEquipped ? new Color(235, 225, 210) : new Color(238, 228, 218), 10);
+
+            // 第一行：名称 + 拥有数/装备标记
+            const nameSuffix = isEquipped ? '（已装备）' : (ownedCount > 0 ? ` x${ownedCount}` : '');
+            const nameLabel = this.makeLabel(`${config.name}${nameSuffix}`, 19, COLOR_TEXT_DARK, card, new Vec3(-240, 26, 0));
+            nameLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
+            this.clampLabelToCard(nameLabel, 450);
+
+            // 稀有度色标
+            const rarityColor = rarityColors[config.rarity] || new Color(200, 190, 180);
+            const rarityNode = new Node('RarityTag');
+            rarityNode.layer = Layers.Enum.UI_2D;
+            rarityNode.setPosition(255, 26, 0);
+            card.addChild(rarityNode);
+            const rarityTrans = rarityNode.addComponent(UITransform);
+            rarityTrans.setContentSize(56, 24);
+            this.drawPanel(rarityNode, rarityColor, 6);
+            this.makeLabel(config.rarity, 16, COLOR_TEXT_LIGHT, rarityNode, Vec3.ZERO);
+
+            // 第二行：Buff 效果
+            const buffLabel = this.makeLabel(
+                `✨ ${formatBuffText(config.buffType, config.buffValue)}`,
+                16,
+                new Color(180, 110, 30),
+                card,
+                new Vec3(-240, -4, 0),
+            );
+            buffLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
+            this.clampLabelToCard(buffLabel, 500);
+
+            // 第三行：描述
+            const descLabel = this.makeLabel(config.desc, 14, new Color(130, 120, 110), card, new Vec3(-240, -32, 0));
+            descLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
+            this.clampLabelToCard(descLabel, 500);
+        });
+
+        // 分页按钮
+        if (pageCount > 1) {
+            const pageBtnY = startY - pageTitles.length * (cardHeight + gap) - 20;
+
+            const prevBtn = new Node('CatalogPrev');
+            prevBtn.layer = Layers.Enum.UI_2D;
+            prevBtn.setPosition(-130, pageBtnY, 0);
+            container.addChild(prevBtn);
+            const prevTrans = prevBtn.addComponent(UITransform);
+            prevTrans.setContentSize(110, 40);
+            this.drawPanel(prevBtn, new Color(200, 190, 180), 8);
+            this.makeLabel('◀ 上一页', 18, COLOR_TEXT_DARK, prevBtn, Vec3.ZERO);
+            prevBtn.on(Node.EventType.TOUCH_END, () => {
+                if (this.catalogPage > 0) {
+                    this.catalogPage--;
+                    this.refreshTitleUI();
+                }
+            }, this);
+
+            this.makeLabel(
+                `${this.catalogPage + 1} / ${pageCount}`,
+                18,
+                COLOR_TEXT_DARK,
+                container,
+                new Vec3(0, pageBtnY, 0),
+            );
+
+            const nextBtn = new Node('CatalogNext');
+            nextBtn.layer = Layers.Enum.UI_2D;
+            nextBtn.setPosition(130, pageBtnY, 0);
+            container.addChild(nextBtn);
+            const nextTrans = nextBtn.addComponent(UITransform);
+            nextTrans.setContentSize(110, 40);
+            this.drawPanel(nextBtn, new Color(200, 190, 180), 8);
+            this.makeLabel('下一页 ▶', 18, COLOR_TEXT_DARK, nextBtn, Vec3.ZERO);
+            nextBtn.on(Node.EventType.TOUCH_END, () => {
+                if (this.catalogPage < pageCount - 1) {
+                    this.catalogPage++;
+                    this.refreshTitleUI();
+                }
+            }, this);
+        }
+    }
+
+    /** 展示抽卡结果（Toast 风格） */
+    private showGachaResult(titles: TitleConfig[]): void {
+        // 简单提示：显示第一个结果
+        if (titles.length === 0) return;
+        const top = titles[0];
+        const rarityColors: Record<string, string> = {
+            N: '#9e9e9e',
+            R: '#4a90d9',
+            SR: '#9b59d0',
+            SSR: '#f2b30f',
+            UR: '#e34a4a',
+        };
+        const color = rarityColors[top.rarity] || '#ffffff';
+        const summary = titles.length === 1
+            ? `${top.name}`
+            : `${top.name} 等 ${titles.length} 个称号`;
+        this.showToast(`抽到：${summary}`, 2000);
+    }
+
+    /** 短暂提示（Toast 风格） */
+    private showToast(msg: string, duration: number = 1500): void {
+        const toast = new Node('Toast');
+        toast.layer = Layers.Enum.UI_2D;
+        toast.setPosition(0, 0, 0);
+        (this.titleOverlay || this.node).addChild(toast);
+        const bg = toast.addComponent(Graphics);
+        bg.fillColor = new Color(0, 0, 0, 200);
+        bg.roundRect(-180, -30, 360, 60, 12);
+        bg.fill();
+        this.makeLabel(msg, 22, COLOR_TEXT_LIGHT, toast, Vec3.ZERO);
+        this.scheduleOnce(() => {
+            if (toast.isValid) toast.destroy();
+        }, duration / 1000);
+    }
+
+    private openTitle(): void {
+        if (!this.titleOverlay) return;
+        this.titleOverlay.active = true;
+        AdManager.instance.showBanner();
+        this.refreshTitleUI();
+        // 配置加载完成后若有标签页已经打开，刷新一次保证数据完整
+        TitleManager.instance.whenReady(() => {
+            if (this.titleOverlay && this.titleOverlay.active && this.titleOverlay.isValid) {
+                this.refreshTitleUI();
+            }
+        });
+        const opacity = this.titleOverlay.getComponent(UIOpacity);
+        if (opacity) {
+            opacity.opacity = 0;
+            tween(opacity).to(0.2, { opacity: 255 }).start();
+        }
+    }
+
     private onSkinChanged(): void {
         this.drawBoardGraphics();
         this.tileMap.forEach((tv) => this.renderTile(tv));
@@ -753,7 +1284,7 @@ export class GameManager extends Component {
         this.isAnimating = false;
         this.coinsEarnedThisGame = 0;
         this.hasRevivedThisGame = false;
-        this.board = new BoardLogic(4, this.difficulty); // 构造函数 reset() 已生成 2 个方块
+        this.board = new BoardLogic(4, this.difficulty, this.getEquippedBuffs()); // 构造函数 reset() 已生成 2 个方块
         this.gameStarted = true;
         this.won = false;
         this.clearTiles();
@@ -769,12 +1300,47 @@ export class GameManager extends Component {
         this.updateScore();
     }
 
+    /**
+     * 将当前装备称号的 Buff 映射为 BoardBuffs（不含 COIN_BONUS，后者在金币结算处单独处理）。
+     */
+    private getEquippedBuffs(): BoardBuffs {
+        const buffs: BoardBuffs = {};
+        const title = TitleManager.instance.getEquippedTitle();
+        if (!title) return buffs;
+        switch (title.buffType) {
+            case BuffType.SCORE_BONUS:
+                buffs.scoreMultiplier = 1 + title.buffValue;
+                break;
+            case BuffType.BOMB_PROB:
+                buffs.bombProb = title.buffValue;
+                break;
+            case BuffType.BOMB_RANGE:
+                buffs.bombRangeExtra = title.buffValue;
+                break;
+            case BuffType.BOMB_SCORE_MULT:
+                buffs.bombScoreMultiplier = title.buffValue;
+                break;
+            case BuffType.BOMB_NO_DESTROY:
+                buffs.bombNoDestroyProb = title.buffValue;
+                break;
+            default:
+                break;
+        }
+        return buffs;
+    }
+
+    /** 获取当前装备称号的金币加成倍率（COIN_BONUS），无称号为 1.0 */
+    private getEquippedCoinMultiplier(): number {
+        const title = TitleManager.instance.getEquippedTitle();
+        if (title && title.buffType === BuffType.COIN_BONUS) return 1 + title.buffValue;
+        return 1;
+    }
+
     private restart(): void {
         this.runWithInterstitialTransition(() => {
             this.closeOverlay();
             this.startGame();
-        });
-    }
+        });    }
 
     private runWithInterstitialTransition(callback: () => void): void {
         if (AdManager.instance.shouldShowInterstitial()) {
@@ -1161,7 +1727,13 @@ export class GameManager extends Component {
         const diffScore = this.board.score - this.lastScore;
         if (diffScore > 0) {
             const gainedCoins = SkinManager.instance.addCoinsFromScore(diffScore, this.difficulty);
-            this.coinsEarnedThisGame += gainedCoins;
+            // 称号 COIN_BONUS 金币加成（结算加成，仅作用于本局额外收益）
+            const multiplier = this.getEquippedCoinMultiplier();
+            const bonusCoins = Math.floor(gainedCoins * (multiplier - 1));
+            if (bonusCoins > 0) {
+                SkinManager.instance.addCoins(bonusCoins);
+            }
+            this.coinsEarnedThisGame += gainedCoins + bonusCoins;
             this.lastScore = this.board.score;
         } else if (this.board.score === 0) {
             this.lastScore = 0;
@@ -1565,6 +2137,21 @@ export class GameManager extends Component {
         label.horizontalAlign = Label.HorizontalAlign.CENTER;
         label.verticalAlign = Label.VerticalAlign.CENTER;
         return label;
+    }
+
+    /**
+     * 将卡片内左对齐 Label 限定在指定文本宽度内：
+     * 设置 UITransform 宽度 + SHRINK，并把节点中心右移到指定左缘坐标，
+     * 防止长文本溢出卡片右侧边界。
+     * @param leftX 文本左缘在父节点中的 x 坐标（默认 -240，与图鉴卡片一致）
+     */
+    private clampLabelToCard(label: Label, textWidth: number, leftX = -240): void {
+        const trans = label.node.getComponent(UITransform) || label.node.addComponent(UITransform);
+        trans.setContentSize(textWidth, label.lineHeight);
+        label.overflow = Label.Overflow.SHRINK;
+        const pos = label.node.position;
+        // 调用方传入的 x 是原左缘坐标（当前节点锚点 0.5），把中心移到 leftX + width/2 使左缘对齐
+        label.node.setPosition(leftX + textWidth / 2, pos.y, pos.z);
     }
 
     /** 绘制圆角矩形路径 */

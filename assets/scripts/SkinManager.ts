@@ -209,6 +209,17 @@ export class SkinManager {
         sys.localStorage.setItem(KEY_COINS, String(this.coins));
     }
 
+    /**
+     * 扣减金币，返回是否成功。用于称号抽卡等金币消耗场景。
+     */
+    public spendCoins(amount: number): boolean {
+        if (amount <= 0) return false;
+        if (this.coins < amount) return false;
+        this.coins -= amount;
+        sys.localStorage.setItem(KEY_COINS, String(this.coins));
+        return true;
+    }
+
     // ==================== 皮肤管理 ====================
 
     public getEquippedSkinId(): string {

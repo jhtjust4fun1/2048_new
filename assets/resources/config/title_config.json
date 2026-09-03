@@ -1,0 +1,304 @@
+{
+  "gachaPrice": 200,
+  "gachaTenCount": 10,
+  "dailyFreeAdLimit": 5,
+  "titles": [
+    {
+      "id": "n_adder",
+      "name": "见习加法员",
+      "rarity": "N",
+      "weight": 9,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.02,
+      "desc": "2+2=4，我算得可快了！"
+    },
+    {
+      "id": "n_slider",
+      "name": "滑动练习生",
+      "rarity": "N",
+      "weight": 9,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.03,
+      "desc": "刚刚学会上下左右滑动的萌新。"
+    },
+    {
+      "id": "n_mover",
+      "name": "数字搬运工",
+      "rarity": "N",
+      "weight": 9,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.03,
+      "desc": "不像在玩游戏，像是在工地上搬砖。"
+    },
+    {
+      "id": "n_casual",
+      "name": "随缘玩家",
+      "rarity": "N",
+      "weight": 9,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.04,
+      "desc": "闭着眼睛乱划，主打一个随缘。"
+    },
+    {
+      "id": "n_fuse",
+      "name": "引线点火员",
+      "rarity": "N",
+      "weight": 9,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.05,
+      "desc": "第一次接触炸弹机制，差点把自己炸飞。"
+    },
+    {
+      "id": "n_slip",
+      "name": "手滑致死",
+      "rarity": "N",
+      "weight": 9,
+      "buffType": "SCORE_BONUS",
+      "buffValue": 0.03,
+      "desc": "经常因为滑错方向导致满盘皆输。"
+    },
+    {
+      "id": "r_arith",
+      "name": "进阶算术师",
+      "rarity": "R",
+      "weight": 5,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.08,
+      "desc": "已经能熟练背诵 2 的 10 次方。"
+    },
+    {
+      "id": "r_bombfan",
+      "name": "爆破爱好者",
+      "rarity": "R",
+      "weight": 5,
+      "buffType": "BOMB_PROB",
+      "buffValue": 0.005,
+      "desc": "逐渐迷恋上清理屏幕的爽快感。"
+    },
+    {
+      "id": "r_survivor",
+      "name": "绝境求生",
+      "rarity": "R",
+      "weight": 5,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.10,
+      "desc": "总能在格子全满的前一秒完成消除。"
+    },
+    {
+      "id": "r_obsess",
+      "name": "512的执念",
+      "rarity": "R",
+      "weight": 5,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.12,
+      "desc": "距离 1024 永远只差那么一步。"
+    },
+    {
+      "id": "r_sweeper",
+      "name": "清道夫",
+      "rarity": "R",
+      "weight": 5,
+      "buffType": "SCORE_BONUS",
+      "buffValue": 0.12,
+      "desc": "喜欢把低级数字清理得干干净净。"
+    },
+    {
+      "id": "r_precise",
+      "name": "精准爆破",
+      "rarity": "R",
+      "weight": 5,
+      "buffType": "BOMB_SCORE_MULT",
+      "buffValue": 1.2,
+      "desc": "学会有策略地利用炸弹，而不是乱炸。"
+    },
+    {
+      "id": "sr_watcher",
+      "name": "1024 守望者",
+      "rarity": "SR",
+      "weight": 2,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.25,
+      "desc": "已经摸到了胜利的门槛，高手的象征。"
+    },
+    {
+      "id": "sr_bombexpert",
+      "name": "爆破专家",
+      "rarity": "SR",
+      "weight": 2,
+      "buffType": "BOMB_PROB",
+      "buffValue": 0.02,
+      "desc": "建议与他保持距离，他身上全是 C4。"
+    },
+    {
+      "id": "sr_fission",
+      "name": "终极裂变",
+      "rarity": "SR",
+      "weight": 2,
+      "buffType": "BOMB_SCORE_MULT",
+      "buffValue": 2.0,
+      "desc": "当数字裂开时，释放出惊人的能量。"
+    },
+    {
+      "id": "sr_omen",
+      "name": "核子前兆",
+      "rarity": "SR",
+      "weight": 2,
+      "buffType": "BOMB_RANGE",
+      "buffValue": 1,
+      "desc": "爆炸的威力开始不受控制地外溢。"
+    },
+    {
+      "id": "sr_bias",
+      "name": "幸存者偏差",
+      "rarity": "SR",
+      "weight": 2,
+      "buffType": "BOMB_NO_DESTROY",
+      "buffValue": 0.10,
+      "desc": "炸弹响了，但不知为何方块完好无损。"
+    },
+    {
+      "id": "sr_pikastar",
+      "name": "艺术即派大星",
+      "rarity": "SR",
+      "weight": 2,
+      "buffType": "BOMB_PROB",
+      "buffValue": 0.03,
+      "desc": "爆炸就是艺术，嗯！"
+    },
+
+    {
+      "id": "ssr_nuclear_cmd",
+      "name": "核子指挥官",
+      "rarity": "SSR",
+      "weight": 1,
+      "buffType": "BOMB_SCORE_MULT",
+      "buffValue": 2.0,
+      "effects": [
+        { "type": "BOMB_RANGE", "value": 1 }
+      ],
+      "desc": "精准计算落点，爆炸范围之内寸草不生。",
+      "evolveTargetId": "ur_blackhole"
+    },
+    {
+      "id": "ssr_gold_hand",
+      "name": "黄金点金手",
+      "rarity": "SSR",
+      "weight": 1,
+      "buffType": "COIN_BONUS",
+      "buffValue": 0.60,
+      "effects": [
+        { "type": "COMBO_GOLD_BONUS", "value": 15 }
+      ],
+      "desc": "手指划过屏幕的声音，听起来像金币在叮当作响。",
+      "evolveTargetId": "ur_tycoon"
+    },
+    {
+      "id": "ssr_time_fold",
+      "name": "时空折叠者",
+      "rarity": "SSR",
+      "weight": 1,
+      "buffType": "UNDO_COUNT",
+      "buffValue": 2,
+      "effects": [
+        { "type": "INITIAL_BOOST", "value": 1 }
+      ],
+      "desc": "手滑不再是世界末日，时间可以为我倒流两步。",
+      "evolveTargetId": "ur_causality"
+    },
+    {
+      "id": "ssr_fission",
+      "name": "裂变源点",
+      "rarity": "SSR",
+      "weight": 1,
+      "buffType": "CHAIN_EXPLOSION",
+      "buffValue": 1,
+      "desc": "连锁一旦开启，连我自己都不知道什么时候会停下来。",
+      "evolveTargetId": "ur_supernova"
+    },
+    {
+      "id": "ssr_absolute_zero",
+      "name": "绝对零度",
+      "rarity": "SSR",
+      "weight": 1,
+      "buffType": "PAUSE_SPAWN",
+      "buffValue": 3,
+      "desc": "在最拥挤的时刻，让喧嚣的棋盘冷静一瞬间。",
+      "evolveTargetId": "ur_entropy"
+    },
+    {
+      "id": "ssr_artisan",
+      "name": "造物工匠",
+      "rarity": "SSR",
+      "weight": 1,
+      "buffType": "MIN_SPAWN_VALUE",
+      "buffValue": 4,
+      "desc": "低效的起点已经被剔除，起跑线直接提前一步。",
+      "evolveTargetId": "ur_creator"
+    },
+
+    {
+      "id": "ur_blackhole",
+      "name": "灭世奇点",
+      "rarity": "UR",
+      "weight": 0,
+      "buffType": "GRAVITY_MERGE",
+      "buffValue": 1,
+      "desc": "引爆时产生引力奇点，除清除 3x3 区域外，还会将全屏散落的最小同值方块强制吸入并合并。"
+    },
+    {
+      "id": "ur_tycoon",
+      "name": "无尽财阀",
+      "rarity": "UR",
+      "weight": 0,
+      "buffType": "COIN_BONUS",
+      "buffValue": 1.20,
+      "effects": [
+        { "type": "MERGE_GOLD_DROP", "value": 0.15 }
+      ],
+      "desc": "结算金币 +120%，局内任意方块合成时有概率直接原地掉落金币。"
+    },
+    {
+      "id": "ur_causality",
+      "name": "因果掌控者",
+      "rarity": "UR",
+      "weight": 0,
+      "buffType": "GAME_OVER_PREVENT",
+      "buffValue": 1,
+      "desc": "当棋盘完全卡死濒死时，强制回溯：清除全屏所有 2 和 4 并重排棋盘，每局触发 1 次。"
+    },
+    {
+      "id": "ur_supernova",
+      "name": "超新星爆裂",
+      "rarity": "UR",
+      "weight": 0,
+      "buffType": "CLEAR_SMALL_TILES",
+      "buffValue": 8,
+      "effects": [
+        { "type": "COMBO_SCORE_MULT", "value": 3 }
+      ],
+      "desc": "爆炸触发连环爆破，清理全屏所有 ≤8 的杂乱方块，连击得分额外加成 3 倍。"
+    },
+    {
+      "id": "ur_entropy",
+      "name": "熵寂主宰",
+      "rarity": "UR",
+      "weight": 0,
+      "buffType": "ABSOLUTE_DOMAIN",
+      "buffValue": 2,
+      "desc": "场上空间不足 4 格时自动激活绝对领域：将所有奇数位方块同化为奇数格中的最大数，每局限 2 次。"
+    },
+    {
+      "id": "ur_creator",
+      "name": "创世主脑",
+      "rarity": "UR",
+      "weight": 0,
+      "buffType": "MIN_SPAWN_VALUE",
+      "buffValue": 4,
+      "effects": [
+        { "type": "SPAWN_8_PROB", "value": 0.20 },
+        { "type": "WIN_2048_REWARD", "value": 1000 }
+      ],
+      "desc": "新方块保底为 4 且有 20% 概率生成 8；合成出 2048 时立即触发通关满分奖励并返还 1000 金币。"
+    }
+  ]
+}

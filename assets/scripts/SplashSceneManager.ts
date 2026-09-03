@@ -85,6 +85,27 @@ export class SplashSceneManager extends Component {
                 })
                 .start();
         }, this);
+
+        // 底部通用健康忠告
+        this.buildHealthNotice();
+    }
+
+    private buildHealthNotice(): void {
+        const noticeNode = new Node('HealthNotice');
+        noticeNode.layer = this.node.layer;
+        noticeNode.setPosition(0, -588, 0);
+        this.node.addChild(noticeNode);
+
+        const trans = noticeNode.addComponent(UITransform);
+        trans.setContentSize(680, 90);
+
+        const label = noticeNode.addComponent(Label);
+        label.string = '健康游戏忠告\n抵制不良游戏，拒绝盗版游戏。注意自我保护，谨防受骗上当。\n适度游戏益脑，沉迷游戏伤身。合理安排时间，享受健康生活。';
+        label.fontSize = 15;
+        label.lineHeight = 22;
+        label.horizontalAlign = Label.HorizontalAlign.CENTER;
+        label.verticalAlign = Label.VerticalAlign.CENTER;
+        label.color = new Color(255, 255, 255, 160);
     }
 
     private drawPanel(node: Node, color: Color, radius: number): void {
