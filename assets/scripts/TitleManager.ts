@@ -69,9 +69,9 @@ export const RARITY_COLORS: Record<TitleRarity, string> = {
 export function formatBuffText(buffType: BuffType, buffValue: number): string {
     switch (buffType) {
         case BuffType.COIN_BONUS:
-            return `结算金币 +${Math.round(buffValue * 100)}%`;
+            return `金币加成 +${Math.round(buffValue * 100)}%`;
         case BuffType.SCORE_BONUS:
-            return `结算分数 +${Math.round(buffValue * 100)}%`;
+            return `分数加成 +${Math.round(buffValue * 100)}%`;
         case BuffType.BOMB_PROB:
             return `炸弹出现概率 +${(buffValue * 100).toFixed(1)}%`;
         case BuffType.BOMB_RANGE:
@@ -95,9 +95,9 @@ export function formatBuffText(buffType: BuffType, buffValue: number): string {
         case BuffType.CLEAR_SMALL_TILES:
             return `爆炸触发连环爆破，清屏所有 ≤${Math.round(buffValue)} 方块`;
         case BuffType.PAUSE_SPAWN:
-            return `空格不足时停止生成（每局 ${Math.round(buffValue)} 次）`;
+            return `空格不足 3 格时停止生成（每局 ${Math.round(buffValue)} 次）`;
         case BuffType.ABSOLUTE_DOMAIN:
-            return `空间不足时激活绝对领域，奇数位同化（每局 ${Math.round(buffValue)} 次）`;
+            return `空格不足 4 格时激活绝对领域，奇数位同化（每局 ${Math.round(buffValue)} 次）`;
         case BuffType.MIN_SPAWN_VALUE:
             return `新方块保底为 ${Math.round(buffValue)}`;
         case BuffType.SPAWN_8_PROB:
@@ -105,7 +105,7 @@ export function formatBuffText(buffType: BuffType, buffValue: number): string {
         case BuffType.WIN_2048_REWARD:
             return `合成 2048 触发通关奖励并返还 ${Math.round(buffValue)} 金币`;
         case BuffType.COMBO_SCORE_MULT:
-            return `连击得分额外 ${buffValue} 倍`;
+            return `本步合并得分 ${buffValue} 倍`;
         case BuffType.GAME_OVER_PREVENT:
             return `卡死濒死时自动回溯清杂（每局 ${Math.round(buffValue)} 次）`;
         default:
