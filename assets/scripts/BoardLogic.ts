@@ -503,16 +503,16 @@ export class BoardLogic {
 
         // 数值保底（MIN_SPAWN_VALUE）：剔除低于保底值的权重项，并重新归一化
         const minValue = this.buffs.minSpawnValue;
-        let weights = this.config.spawnWeights;
+        const weights = this.config.spawnWeights;
         let spawnValue = 2;
         if (minValue > 0) {
             const filtered = weights.filter((item) => item.value >= minValue);
             if (filtered.length > 0) {
                 const total = filtered.reduce((sum, item) => sum + item.prob, 0);
-                weights = filtered.map((item) => ({ value: item.value, prob: item.prob / total }));
+                const norm = filtered.map((item) => ({ value: item.value, prob: item.prob / total }));
                 const rand = Math.random();
                 let cumulative = 0;
-                for (const item of weights) {
+                for (const item of norm) {
                     cumulative += item.prob;
                     if (rand <= cumulative) {
                         spawnValue = item.value;
@@ -521,10 +521,6 @@ export class BoardLogic {
                 }
             } else {
                 spawnValue = minValue;
-            }
-            // 创世主脑：额外 20% 概率生成 8
-            if (this.buffs.spawn8Prob > 0 && Math.random() < this.buffs.spawn8Prob) {
-                spawnValue = 8;
             }
         } else {
             // 无保底时维持原难度权重逻辑
@@ -537,6 +533,14 @@ export class BoardLogic {
                     break;
                 }
             }
+        }
+        // 额外概率生成 8（SPAWN_8_PROB，创世主脑）：独立于保底路径，避免与 MIN_SPAWN_VALUE 耦合
+        if (this.buffs.spawn8Prob > 0 && Math.random() < this.buffs.spawn8Prob) {
+            spawnValue = 8;
+        }
+        // 兜底：命中 8 不得低于保底值（若未来保底值 > 8，则该次保持保底值）
+        if (minValue > 0 && spawnValue < minValue) {
+            spawnValue = minValue;
         }
 
         this.grid[pos.row][pos.col] = {
@@ -882,8 +886,9 @@ export class BoardLogic {
                 targetPositions.push({ row, col });
                 targetIds.push(tile.id);
                 scoreGained += tile.value * 2;
-                destroyedIds.add(tile.id);
+                // 仅真正销毁的方块才标记，避免 BOMB_NO_DESTROY 保留的方块在同一步内被后续爆炸错误免疫
                 if (!noDestroy) {
+                    destroyedIds.add(tile.id);
                     this.grid[row][col] = this.emptyTile();
                 }
             }
