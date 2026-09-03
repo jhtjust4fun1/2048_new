@@ -216,6 +216,9 @@ function blastOffsets(radius: number): Pos[] {
 
 export class BoardLogic {
     public readonly size: number;
+    public lastSpawnPaused: boolean = false;
+    public lastAbsoluteDomain: boolean = false;
+    public initialBoostTriggered: boolean = false;
     public readonly difficulty: Difficulty;
     public readonly maxEnergy = MAX_ENERGY;
     public grid: TileData[][];
@@ -224,7 +227,7 @@ export class BoardLogic {
     /** 能量满或 Combo 达标后，下一次生成的方块会成为炸弹。 */
     public bombNextSpawn: boolean;
 
-    private readonly buffs: Required<BoardBuffs>;
+    public buffs: Required<BoardBuffs>;
 
     private nextTileId = 1;
 
@@ -277,6 +280,36 @@ export class BoardLogic {
         this.energy = 0;
         this.bombNextSpawn = false;
         this.reset();
+    }
+
+    public updateBuffs(newBuffs: BoardBuffs): void {
+        this.buffs = {
+            scoreMultiplier: newBuffs.scoreMultiplier ?? 1.0,
+            bombProb: newBuffs.bombProb ?? 0,
+            bombRangeExtra: newBuffs.bombRangeExtra ?? 0,
+            bombScoreMultiplier: newBuffs.bombScoreMultiplier ?? 1.0,
+            bombNoDestroyProb: newBuffs.bombNoDestroyProb ?? 0,
+            comboGoldBonus: newBuffs.comboGoldBonus ?? 0,
+            mergeGoldDropProb: newBuffs.mergeGoldDropProb ?? 0,
+            gravityMerge: newBuffs.gravityMerge ?? false,
+            undoCount: newBuffs.undoCount ?? 0,
+            initialBoost: newBuffs.initialBoost ?? false,
+            chainExplosion: newBuffs.chainExplosion ?? false,
+            clearSmallThreshold: newBuffs.clearSmallThreshold ?? 0,
+            pauseSpawnUses: newBuffs.pauseSpawnUses ?? 0,
+            absoluteDomainUses: newBuffs.absoluteDomainUses ?? 0,
+            minSpawnValue: newBuffs.minSpawnValue ?? 0,
+            spawn8Prob: newBuffs.spawn8Prob ?? 0,
+            win2048Reward: newBuffs.win2048Reward ?? 0,
+            comboScoreMultiplier: newBuffs.comboScoreMultiplier ?? 1.0,
+            gameOverPreventUses: newBuffs.gameOverPreventUses ?? 0
+        };
+        
+        // Refresh remaining uses based on the new title's buff properties
+        this.undoLeft = this.buffs.undoCount;
+        this.pauseSpawnLeft = this.buffs.pauseSpawnUses;
+        this.absoluteDomainLeft = this.buffs.absoluteDomainUses;
+        this.gameOverPreventLeft = this.buffs.gameOverPreventUses;
     }
 
     /** 重置棋盘，并在两个随机空格生成初始方块。 */
@@ -385,33 +418,45 @@ export class BoardLogic {
     public tryGameOverPrevent(): boolean {
         if (this.gameOverPreventLeft <= 0) return false;
         if (!this.isGameOver()) return false;
-        const survivors: TileData[] = [];
-        for (let row = 0; row < this.size; row++) {
-            for (let col = 0; col < this.size; col++) {
-                const tile = this.grid[row][col];
-                if (tile.value > 0 && tile.value > 4) survivors.push(tile);
-            }
-        }
-        if (survivors.length === 0 || survivors.length >= this.size * this.size) return false;
-        // 清空棋盘，把幸存方块随机打散到所有格子
-        for (let row = 0; row < this.size; row++) {
-            for (let col = 0; col < this.size; col++) {
-                this.grid[row][col] = this.emptyTile();
-            }
-        }
-        const cells = this.emptyCells();
-        for (const tile of survivors) {
-            const idx = Math.floor(Math.random() * cells.length);
-            const pos = cells.splice(idx, 1)[0];
-            this.grid[pos.row][pos.col] = tile;
-        }
+        
         this.gameOverPreventLeft--;
+        // 倒流 3 回合
+        for (let i = 0; i < 3; i++) {
+            if (this.history.length > 0) {
+                const snap = this.history.shift()!;
+                this.grid = snap.grid.map(r => r.map(c => ({...c})));
+                this.score = snap.score;
+                this.energy = snap.energy;
+                this.bombNextSpawn = snap.bombNextSpawn;
+            }
+        }
+        
+        // 消除 2 和 4
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                if (this.grid[row][col].value === 2 || this.grid[row][col].value === 4) {
+                    this.grid[row][col] = this.emptyTile();
+                }
+            }
+        }
+        
         return true;
     }
 
     /** 创世主脑：返回合成 2048 时触发通关奖励的金币数（每局一次） */
     public consumeWin2048Reward(): number {
         if (this.win2048Rewarded || this.buffs.win2048Reward <= 0) return 0;
+        let has2048 = false;
+        for (let row = 0; row < this.size; row++) {
+            for (let col = 0; col < this.size; col++) {
+                if (this.grid[row][col].value >= 2048) {
+                    has2048 = true;
+                    break;
+                }
+            }
+        }
+        if (!has2048) return 0;
+        
         this.win2048Rewarded = true;
         return this.buffs.win2048Reward;
     }
@@ -428,6 +473,23 @@ export class BoardLogic {
 
     /** 在随机空格生成普通 2/4/8 或待生成的炸弹方块。 */
     public spawnTile(allowRandomBomb: boolean = true): Pos | null {
+        this.lastSpawnPaused = false;
+        this.lastAbsoluteDomain = false;
+        
+        // PAUSE_SPAWN (绝对零度)
+        if (this.pauseSpawnLeft > 0 && this.emptyCells().length < 3) {
+            this.pauseSpawnLeft--;
+            this.lastSpawnPaused = true;
+            return null;
+        }
+
+        // ABSOLUTE_DOMAIN (熵寂主宰)
+        if (this.absoluteDomainLeft > 0 && this.emptyCells().length < 4) {
+            if (this.tryActivateAbsoluteDomain()) {
+                this.lastAbsoluteDomain = true;
+            }
+        }
+
         const cells = this.emptyCells();
         if (cells.length === 0) return null;
 
@@ -504,14 +566,7 @@ export class BoardLogic {
                 const result = this.slideLine(values);
                 const output = direction === 'left' ? result.out : result.out.slice().reverse();
                 this.grid[row] = output;
-                this.appendMoves(
-                    moves,
-                    result,
-                    row,
-                    direction === 'left',
-                    false,
-                    values,
-                );
+                this.appendMoves(moves, result, row, direction === 'left', false, values);
             }
         } else {
             for (let col = 0; col < this.size; col++) {
@@ -522,14 +577,7 @@ export class BoardLogic {
                 const result = this.slideLine(values);
                 const output = direction === 'up' ? result.out : result.out.slice().reverse();
                 for (let row = 0; row < this.size; row++) this.grid[row][col] = output[row];
-                this.appendMoves(
-                    moves,
-                    result,
-                    col,
-                    direction === 'up',
-                    true,
-                    values,
-                );
+                this.appendMoves(moves, result, col, direction === 'up', true, values);
             }
         }
 
@@ -552,11 +600,92 @@ export class BoardLogic {
         }
 
         const mergedScore = realMoves.reduce((total, move) => total + (move.merged ? move.value : 0), 0);
-        this.score += Math.floor(mergedScore * this.buffs.scoreMultiplier);
+        this.score += Math.floor(mergedScore * this.buffs.scoreMultiplier * this.buffs.comboScoreMultiplier);
         this.energy = Math.min(this.maxEnergy, this.energy + combo * this.config.energyPerMerge);
         if (combo >= this.config.comboForBomb || this.energy >= this.maxEnergy) this.bombNextSpawn = true;
 
-        const explosions = this.resolveExplosions(realMoves);
+        const explosionsInfo = this.resolveExplosions(realMoves);
+        const explosions = explosionsInfo.explosions;
+        let chainTriggered = explosionsInfo.chainTriggered;
+
+        let comboGoldBonus = 0;
+        if (this.buffs.comboGoldBonus > 0 && combo >= 3) {
+            comboGoldBonus = this.buffs.comboGoldBonus;
+        }
+
+        let goldDrops = 0;
+        if (this.buffs.mergeGoldDropProb > 0) {
+            for (let i = 0; i < combo; i++) {
+                if (Math.random() < this.buffs.mergeGoldDropProb) {
+                    goldDrops += 10;
+                }
+            }
+        }
+
+        let smallClearCount = 0;
+        if (this.buffs.clearSmallThreshold > 0 && explosions.length > 0) {
+            const threshold = this.buffs.clearSmallThreshold;
+            for (let row = 0; row < this.size; row++) {
+                for (let col = 0; col < this.size; col++) {
+                    const tile = this.grid[row][col];
+                    if (tile.value > 0 && tile.value <= threshold) {
+                        this.score += tile.value * 2;
+                        this.grid[row][col] = this.emptyTile();
+                        smallClearCount++;
+                    }
+                }
+            }
+        }
+
+        let gravityMerge: GravityMergeEvent | undefined;
+        if (this.buffs.gravityMerge && explosions.length > 0) {
+            let minVal = Infinity;
+            for (let row = 0; row < this.size; row++) {
+                for (let col = 0; col < this.size; col++) {
+                    const val = this.grid[row][col].value;
+                    if (val > 0 && val < minVal) {
+                        minVal = val;
+                    }
+                }
+            }
+            if (minVal !== Infinity) {
+                const candidates: Pos[] = [];
+                for (let row = 0; row < this.size; row++) {
+                    for (let col = 0; col < this.size; col++) {
+                        if (this.grid[row][col].value === minVal) {
+                            candidates.push({row, col});
+                        }
+                    }
+                }
+                if (candidates.length >= 2) {
+                    const from1 = candidates[0];
+                    const from2 = candidates[1];
+                    const to = from1;
+                    
+                    this.grid[from1.row][from1.col].value = minVal * 2;
+                    this.grid[from2.row][from2.col] = this.emptyTile();
+                    
+                    this.score += minVal * 2;
+                    
+                    gravityMerge = {
+                        from: [from1, from2],
+                        to: to,
+                        value: minVal * 2
+                    };
+                }
+            }
+        }
+        
+        this.history.unshift({
+            grid: this.grid.map(r => r.map(c => ({...c}))),
+            score: this.score,
+            energy: this.energy,
+            bombNextSpawn: this.bombNextSpawn
+        });
+        if (this.history.length > this.undoLeft) {
+            this.history.pop();
+        }
+
         return {
             moves: realMoves,
             explosions,
@@ -564,6 +693,11 @@ export class BoardLogic {
             energy: this.energy,
             maxEnergy: this.maxEnergy,
             bombNextSpawn: this.bombNextSpawn,
+            comboGoldBonus,
+            goldDrops,
+            gravityMerge,
+            chainTriggered,
+            smallClearCount,
         };
     }
 
@@ -712,21 +846,21 @@ export class BoardLogic {
         }
     }
 
-    private resolveExplosions(moves: TileMove[]): ExplosionEvent[] {
+    private resolveExplosions(moves: TileMove[]): { explosions: ExplosionEvent[], chainTriggered: boolean } {
         const explosions: ExplosionEvent[] = [];
         const destroyedIds = new Set<number>();
-        // 爆炸半径 = 基础 1 格（3x3）+ 称号 BOMB_RANGE 加成
         const radius = 1 + this.buffs.bombRangeExtra;
         const offsets = radius === 1
             ? blastOffsets(1)
             : blastOffsets(Math.max(1, Math.floor(radius)));
+        
+        let chainTriggered = false;
+        const chainCenters: Pos[] = [];
 
         for (const move of moves) {
             if (!move.merged || !move.bombTriggered) continue;
 
-            // BOMB_NO_DESTROY：该次爆炸不毁方块只加分
-            const noDestroy = this.buffs.bombNoDestroyProb > 0
-                && Math.random() < this.buffs.bombNoDestroyProb;
+            const noDestroy = this.buffs.bombNoDestroyProb > 0 && Math.random() < this.buffs.bombNoDestroyProb;
 
             const targetPositions: Pos[] = [];
             const targetIds: number[] = [];
@@ -739,6 +873,12 @@ export class BoardLogic {
 
                 const tile = this.grid[row][col];
                 if (tile.value === 0 || tile.value > move.value || destroyedIds.has(tile.id)) continue;
+                
+                if (this.buffs.chainExplosion && tile.value === move.value) {
+                    chainTriggered = true;
+                    chainCenters.push({ row, col });
+                }
+
                 targetPositions.push({ row, col });
                 targetIds.push(tile.id);
                 scoreGained += tile.value * 2;
@@ -749,7 +889,6 @@ export class BoardLogic {
             }
 
             this.score += Math.floor(scoreGained * this.buffs.bombScoreMultiplier);
-            // BOMB_NO_DESTROY：方块仍在棋盘上，不向 UI 提供销毁目标
             explosions.push({
                 center: { row: move.to.row, col: move.to.col },
                 value: move.value,
@@ -758,6 +897,42 @@ export class BoardLogic {
                 scoreGained,
             });
         }
-        return explosions;
+        
+        if (chainTriggered && chainCenters.length > 0) {
+            const crossOffsets = [{row: -1, col: 0}, {row: 1, col: 0}, {row: 0, col: -1}, {row: 0, col: 1}];
+            for (const center of chainCenters) {
+                const targetPositions: Pos[] = [];
+                const targetIds: number[] = [];
+                let scoreGained = 0;
+                for (const offset of crossOffsets) {
+                    let r = center.row + offset.row;
+                    let c = center.col + offset.col;
+                    while (r >= 0 && r < this.size && c >= 0 && c < this.size) {
+                        const tile = this.grid[r][c];
+                        if (tile.value > 0 && !destroyedIds.has(tile.id)) {
+                            targetPositions.push({ row: r, col: c });
+                            targetIds.push(tile.id);
+                            scoreGained += tile.value * 2;
+                            destroyedIds.add(tile.id);
+                            this.grid[r][c] = this.emptyTile();
+                        }
+                        r += offset.row;
+                        c += offset.col;
+                    }
+                }
+                if (targetPositions.length > 0) {
+                    this.score += Math.floor(scoreGained * this.buffs.bombScoreMultiplier);
+                    explosions.push({
+                        center,
+                        value: this.grid[center.row][center.col]?.value || 0,
+                        targetPositions,
+                        targetIds,
+                        scoreGained
+                    });
+                }
+            }
+        }
+
+        return { explosions, chainTriggered };
     }
 }

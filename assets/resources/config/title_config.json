@@ -81,7 +81,7 @@
       "rarity": "R",
       "weight": 5,
       "buffType": "COIN_BONUS",
-      "buffValue": 0.10,
+      "buffValue": 0.1,
       "desc": "总能在格子全满的前一秒完成消除。"
     },
     {
@@ -135,7 +135,7 @@
       "rarity": "SR",
       "weight": 2,
       "buffType": "BOMB_SCORE_MULT",
-      "buffValue": 2.0,
+      "buffValue": 2,
       "desc": "当数字裂开时，释放出惊人的能量。"
     },
     {
@@ -153,7 +153,7 @@
       "rarity": "SR",
       "weight": 2,
       "buffType": "BOMB_NO_DESTROY",
-      "buffValue": 0.10,
+      "buffValue": 0.1,
       "desc": "炸弹响了，但不知为何方块完好无损。"
     },
     {
@@ -165,16 +165,18 @@
       "buffValue": 0.03,
       "desc": "爆炸就是艺术，嗯！"
     },
-
     {
       "id": "ssr_nuclear_cmd",
       "name": "核子指挥官",
       "rarity": "SSR",
       "weight": 1,
       "buffType": "BOMB_SCORE_MULT",
-      "buffValue": 2.0,
+      "buffValue": 2,
       "effects": [
-        { "type": "BOMB_RANGE", "value": 1 }
+        {
+          "type": "BOMB_RANGE",
+          "value": 1
+        }
       ],
       "desc": "精准计算落点，爆炸范围之内寸草不生。",
       "evolveTargetId": "ur_blackhole"
@@ -185,9 +187,12 @@
       "rarity": "SSR",
       "weight": 1,
       "buffType": "COIN_BONUS",
-      "buffValue": 0.60,
+      "buffValue": 0.6,
       "effects": [
-        { "type": "COMBO_GOLD_BONUS", "value": 15 }
+        {
+          "type": "COMBO_GOLD_BONUS",
+          "value": 15
+        }
       ],
       "desc": "手指划过屏幕的声音，听起来像金币在叮当作响。",
       "evolveTargetId": "ur_tycoon"
@@ -200,7 +205,10 @@
       "buffType": "UNDO_COUNT",
       "buffValue": 2,
       "effects": [
-        { "type": "INITIAL_BOOST", "value": 1 }
+        {
+          "type": "INITIAL_BOOST",
+          "value": 1
+        }
       ],
       "desc": "手滑不再是世界末日，时间可以为我倒流两步。",
       "evolveTargetId": "ur_causality"
@@ -235,7 +243,6 @@
       "desc": "低效的起点已经被剔除，起跑线直接提前一步。",
       "evolveTargetId": "ur_creator"
     },
-
     {
       "id": "ur_blackhole",
       "name": "灭世奇点",
@@ -243,7 +250,17 @@
       "weight": 0,
       "buffType": "GRAVITY_MERGE",
       "buffValue": 1,
-      "desc": "引爆时产生引力奇点，除清除 3x3 区域外，还会将全屏散落的最小同值方块强制吸入并合并。"
+      "desc": "引爆时产生引力奇点，除清除 3x3 区域外，还会将全屏散落的最小同值方块强制吸入并合并。",
+      "effects": [
+        {
+          "type": "BOMB_RANGE",
+          "value": 1
+        },
+        {
+          "type": "BOMB_SCORE_MULT",
+          "value": 2
+        }
+      ]
     },
     {
       "id": "ur_tycoon",
@@ -251,9 +268,16 @@
       "rarity": "UR",
       "weight": 0,
       "buffType": "COIN_BONUS",
-      "buffValue": 1.20,
+      "buffValue": 1.2,
       "effects": [
-        { "type": "MERGE_GOLD_DROP", "value": 0.15 }
+        {
+          "type": "MERGE_GOLD_DROP",
+          "value": 0.15
+        },
+        {
+          "type": "COMBO_GOLD_BONUS",
+          "value": 15
+        }
       ],
       "desc": "结算金币 +120%，局内任意方块合成时有概率直接原地掉落金币。"
     },
@@ -264,7 +288,17 @@
       "weight": 0,
       "buffType": "GAME_OVER_PREVENT",
       "buffValue": 1,
-      "desc": "当棋盘完全卡死濒死时，强制回溯：清除全屏所有 2 和 4 并重排棋盘，每局触发 1 次。"
+      "desc": "当棋盘完全卡死濒死时，强制回溯：清除全屏所有 2 和 4 并重排棋盘，每局触发 1 次。",
+      "effects": [
+        {
+          "type": "UNDO_COUNT",
+          "value": 2
+        },
+        {
+          "type": "INITIAL_BOOST",
+          "value": 1
+        }
+      ]
     },
     {
       "id": "ur_supernova",
@@ -274,7 +308,14 @@
       "buffType": "CLEAR_SMALL_TILES",
       "buffValue": 8,
       "effects": [
-        { "type": "COMBO_SCORE_MULT", "value": 3 }
+        {
+          "type": "COMBO_SCORE_MULT",
+          "value": 3
+        },
+        {
+          "type": "CHAIN_EXPLOSION",
+          "value": 1
+        }
       ],
       "desc": "爆炸触发连环爆破，清理全屏所有 ≤8 的杂乱方块，连击得分额外加成 3 倍。"
     },
@@ -285,7 +326,13 @@
       "weight": 0,
       "buffType": "ABSOLUTE_DOMAIN",
       "buffValue": 2,
-      "desc": "场上空间不足 4 格时自动激活绝对领域：将所有奇数位方块同化为奇数格中的最大数，每局限 2 次。"
+      "desc": "场上空间不足 4 格时自动激活绝对领域：将所有奇数位方块同化为奇数格中的最大数，每局限 2 次。",
+      "effects": [
+        {
+          "type": "PAUSE_SPAWN",
+          "value": 3
+        }
+      ]
     },
     {
       "id": "ur_creator",
@@ -295,8 +342,14 @@
       "buffType": "MIN_SPAWN_VALUE",
       "buffValue": 4,
       "effects": [
-        { "type": "SPAWN_8_PROB", "value": 0.20 },
-        { "type": "WIN_2048_REWARD", "value": 1000 }
+        {
+          "type": "SPAWN_8_PROB",
+          "value": 0.2
+        },
+        {
+          "type": "WIN_2048_REWARD",
+          "value": 1000
+        }
       ],
       "desc": "新方块保底为 4 且有 20% 概率生成 8；合成出 2048 时立即触发通关满分奖励并返还 1000 金币。"
     }

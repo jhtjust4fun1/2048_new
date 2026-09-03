@@ -12,7 +12,7 @@ import {
     _decorator, Component, Node, Graphics, Label, Color, tween, Vec3,
     UITransform, sys, input, Input, EventKeyboard, KeyCode,
     EventTouch, Vec2, UIOpacity, Layers, resources, SpriteFrame, Sprite, Texture2D,
-    view, ResolutionPolicy, Tween,
+    view, ResolutionPolicy, Tween, BlockInputEvents,
 } from 'cc';
 import {
     BoardLogic, Difficulty, DIFFICULTY_CONFIGS, Direction, ExplosionEvent,
@@ -143,7 +143,9 @@ export class GameManager extends Component {
     private energyTween: Tween<{ ratio: number }> | null = null;
     private energyPulseTween: Tween<UIOpacity> | null = null;
     private energyParticleLayer: Node | null = null;   // 持续粒子流承载节点
-    private energyParticles: EnergyParticle[] = [];    // 活动粒子列表
+    private energyParticles: EnergyParticle[] = [];
+    private undoButton: Node | null = null;
+    private undoLabel: Label | null = null;
 
     private board!: BoardLogic;
     private tileMap: Map<number, TileView> = new Map(); // tileId -> 视图
@@ -321,6 +323,59 @@ export class GameManager extends Component {
         }
 
         this.updateCoinsLabel();
+        this.createUndoButton();
+    }
+
+    private createUndoButton(): void {
+        let btn = this.node.getChildByName('UndoButton');
+        if (!btn) {
+            btn = new Node('UndoButton');
+            btn.layer = Layers.Enum.UI_2D;
+            btn.setPosition(0, -320, 0); // below board
+            this.node.addChild(btn);
+            const transform = btn.addComponent(UITransform);
+            transform.setContentSize(160, 56);
+            this.drawPanel(btn, new Color(130, 110, 160), 10);
+
+            const labelNode = new Node('Label');
+            labelNode.layer = Layers.Enum.UI_2D;
+            btn.addChild(labelNode);
+            const btnLabel = labelNode.addComponent(Label);
+            btnLabel.string = '🔙 撤销 (0)';
+            btnLabel.fontSize = 20;
+            btnLabel.color = COLOR_TEXT_LIGHT;
+
+            this.undoButton = btn;
+            this.undoLabel = btnLabel;
+
+            btn.on(Node.EventType.TOUCH_END, () => {
+                if (!this.gameStarted || this.isAnimating) return;
+                if (this.board && this.board.undo()) {
+                    this.showToast('时间倒流！');
+                    this.syncBoardUI();
+                    this.updateScore();
+                    this.updateEnergy(this.board.energy, this.board.maxEnergy);
+                    this.updateUndoButton();
+                } else {
+                    this.showToast('无法撤销！');
+                }
+            }, this);
+        } else {
+            this.undoButton = btn;
+            this.undoLabel = btn.getChildByName('Label')?.getComponent(Label)!;
+        }
+        this.undoButton.active = false;
+    }
+
+    private updateUndoButton(): void {
+        if (!this.undoButton || !this.undoLabel || !this.board) return;
+        const left = this.board.getUndoLeft();
+        if (left > 0) {
+            this.undoButton.active = true;
+            this.undoLabel.string = `🔙 撤销 (${left})`;
+        } else {
+            this.undoButton.active = false;
+        }
     }
 
     /** 创建顶部称号入口按钮（与商店按钮成组，位于其左侧） */
@@ -640,6 +695,7 @@ export class GameManager extends Component {
     private titleTab: 'gacha' | 'inventory' | 'catalog' = 'gacha';
     /** 图鉴分页（每页 8 个称号） */
     private catalogPage = 0;
+    private inventoryPage = 0;
     private titleContentContainer!: Node;
 
     private buildTitleOverlayUI(): void {
@@ -853,13 +909,20 @@ export class GameManager extends Component {
             return;
         }
 
-        const startY = 260;
-        const cardHeight = 80;
-        const gap = 10;
-        const maxVisible = Math.min(items.length, 8);
+        const pageSize = 6;
+        const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+        this.inventoryPage = Math.max(0, Math.min(this.inventoryPage, pageCount - 1));
+        const startIdx = this.inventoryPage * pageSize;
+        const pageItems = items.slice(startIdx, startIdx + pageSize);
 
-        for (let i = 0; i < maxVisible; i++) {
-            const { config, count } = items[i];
+        this.makeLabel(`拥有称号（共 ${items.length} 种）`, 22, COLOR_TEXT_DARK, container, new Vec3(0, 300, 0));
+
+        const startY = 230;
+        const cardHeight = 85;
+        const gap = 12;
+
+        for (let i = 0; i < pageItems.length; i++) {
+            const { config, count } = pageItems[i];
             const y = startY - i * (cardHeight + gap);
             const card = new Node(`TitleCard_${config.id}`);
             card.layer = Layers.Enum.UI_2D;
@@ -870,13 +933,11 @@ export class GameManager extends Component {
             const isEquipped = config.id === equippedId;
             this.drawPanel(card, isEquipped ? new Color(235, 225, 210) : new Color(238, 228, 218), 10);
 
-            // 称号名称（左对齐，与图鉴页一致的左缘 -240，下方 Buff 行同左缘）
             const nameText = `${config.name} x${count}`;
             const nameLabel = this.makeLabel(nameText, 20, COLOR_TEXT_DARK, card, new Vec3(-240, 15, 0));
             nameLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
             this.clampLabelToCard(nameLabel, 450, -240);
 
-            // 稀有度色标
             const rarityColors: Record<string, Color> = {
                 N: new Color(158, 158, 158),
                 R: new Color(74, 144, 217),
@@ -887,7 +948,7 @@ export class GameManager extends Component {
             const rarityColor = rarityColors[config.rarity] || new Color(200, 190, 180);
             const rarityNode = new Node('RarityTag');
             rarityNode.layer = Layers.Enum.UI_2D;
-            // 按名称文本宽度估算色标位置，使其紧贴名称右侧（中文≈字号宽，ASCII≈0.55 字号宽）
+            
             let nameWidth = 0;
             for (const ch of nameText) {
                 nameWidth += ch.charCodeAt(0) > 255 ? 20 : 11;
@@ -900,7 +961,6 @@ export class GameManager extends Component {
             this.drawPanel(rarityNode, rarityColor, 6);
             this.makeLabel(config.rarity, 16, COLOR_TEXT_LIGHT, rarityNode, Vec3.ZERO);
 
-            // 称号 Buff 效果（复用图鉴格式，左缘与名称一致，限制宽度防止溢出卡片）
             const buffLabel = this.makeLabel(
                 `✨ ${formatBuffText(config.buffType, config.buffValue)}`,
                 15,
@@ -911,7 +971,6 @@ export class GameManager extends Component {
             buffLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
             this.clampLabelToCard(buffLabel, 360, -240);
 
-            // 装备/卸下按钮
             if (!isEquipped) {
                 const equipBtn = new Node('EquipBtn');
                 equipBtn.layer = Layers.Enum.UI_2D;
@@ -923,6 +982,10 @@ export class GameManager extends Component {
                 this.makeLabel('装备', 18, COLOR_TEXT_LIGHT, equipBtn, Vec3.ZERO);
                 equipBtn.on(Node.EventType.TOUCH_END, () => {
                     TitleManager.instance.equipTitle(config.id);
+                    if (this.board) {
+                        this.board.updateBuffs(this.getEquippedBuffs());
+                        this.updateUndoButton();
+                    }
                     this.refreshTitleUI();
                 }, this);
             } else {
@@ -936,16 +999,15 @@ export class GameManager extends Component {
                 this.makeLabel('已装备', 18, COLOR_TEXT_LIGHT, unequipBtn, Vec3.ZERO);
             }
 
-            // SSR 合成按钮
             if (config.rarity === 'SSR' && TitleManager.instance.canAscend(config.id)) {
                 const ascendBtn = new Node('AscendBtn');
                 ascendBtn.layer = Layers.Enum.UI_2D;
-                ascendBtn.setPosition(310, 0, 0);
+                ascendBtn.setPosition(130, 0, 0); // moved inside card to avoid overflow
                 card.addChild(ascendBtn);
                 const ascTrans = ascendBtn.addComponent(UITransform);
                 ascTrans.setContentSize(80, 40);
-                this.drawPanel(ascendBtn, new Color(230, 150, 40), 8);
-                this.makeLabel('合成UR', 18, COLOR_TEXT_LIGHT, ascendBtn, Vec3.ZERO);
+                this.drawPanel(ascendBtn, new Color(240, 90, 90), 8);
+                this.makeLabel('突破', 18, COLOR_TEXT_LIGHT, ascendBtn, Vec3.ZERO);
                 ascendBtn.on(Node.EventType.TOUCH_END, () => {
                     const ur = TitleManager.instance.ascend(config.id);
                     if (ur) {
@@ -955,9 +1017,49 @@ export class GameManager extends Component {
                 }, this);
             }
         }
-    }
 
-    /** 图鉴页：展示全部称号（配置表驱动，含 Buff 与描述），每页 8 个 */
+        if (pageCount > 1) {
+            const pageBtnY = startY - 6 * (cardHeight + gap) - 20; // 强制按满页计算，固定在底部
+
+            const prevBtn = new Node('InventoryPrev');
+            prevBtn.layer = Layers.Enum.UI_2D;
+            prevBtn.setPosition(-130, pageBtnY, 0);
+            container.addChild(prevBtn);
+            const prevTrans = prevBtn.addComponent(UITransform);
+            prevTrans.setContentSize(110, 40);
+            this.drawPanel(prevBtn, new Color(200, 190, 180), 8);
+            this.makeLabel('◀ 上一页', 18, COLOR_TEXT_DARK, prevBtn, Vec3.ZERO);
+            prevBtn.on(Node.EventType.TOUCH_END, () => {
+                if (this.inventoryPage > 0) {
+                    this.inventoryPage--;
+                    this.refreshTitleUI();
+                }
+            }, this);
+
+            this.makeLabel(
+                `${this.inventoryPage + 1} / ${pageCount}`,
+                18,
+                COLOR_TEXT_DARK,
+                container,
+                new Vec3(0, pageBtnY, 0),
+            );
+
+            const nextBtn = new Node('InventoryNext');
+            nextBtn.layer = Layers.Enum.UI_2D;
+            nextBtn.setPosition(130, pageBtnY, 0);
+            container.addChild(nextBtn);
+            const nextTrans = nextBtn.addComponent(UITransform);
+            nextTrans.setContentSize(110, 40);
+            this.drawPanel(nextBtn, new Color(200, 190, 180), 8);
+            this.makeLabel('下一页 ▶', 18, COLOR_TEXT_DARK, nextBtn, Vec3.ZERO);
+            nextBtn.on(Node.EventType.TOUCH_END, () => {
+                if (this.inventoryPage < pageCount - 1) {
+                    this.inventoryPage++;
+                    this.refreshTitleUI();
+                }
+            }, this);
+        }
+    }
     private buildCatalogTab(): void {
         const container = this.titleContentContainer;
 
@@ -1036,7 +1138,7 @@ export class GameManager extends Component {
 
         // 分页按钮
         if (pageCount > 1) {
-            const pageBtnY = startY - pageTitles.length * (cardHeight + gap) - 20;
+            const pageBtnY = startY - 6 * (cardHeight + gap) - 20; // 强制按满页计算，固定在底部
 
             const prevBtn = new Node('CatalogPrev');
             prevBtn.layer = Layers.Enum.UI_2D;
@@ -1163,6 +1265,7 @@ export class GameManager extends Component {
             transform.width, transform.height, radius);
         graphics.fillColor = color;
         graphics.fill();
+        node.addComponent(BlockInputEvents);
     }
 
     private drawOverlayMask(node: Node): void {
@@ -1298,6 +1401,7 @@ export class GameManager extends Component {
             }
         }
         this.updateScore();
+        this.updateUndoButton();
     }
 
     /**
@@ -1307,24 +1411,31 @@ export class GameManager extends Component {
         const buffs: BoardBuffs = {};
         const title = TitleManager.instance.getEquippedTitle();
         if (!title) return buffs;
-        switch (title.buffType) {
-            case BuffType.SCORE_BONUS:
-                buffs.scoreMultiplier = 1 + title.buffValue;
-                break;
-            case BuffType.BOMB_PROB:
-                buffs.bombProb = title.buffValue;
-                break;
-            case BuffType.BOMB_RANGE:
-                buffs.bombRangeExtra = title.buffValue;
-                break;
-            case BuffType.BOMB_SCORE_MULT:
-                buffs.bombScoreMultiplier = title.buffValue;
-                break;
-            case BuffType.BOMB_NO_DESTROY:
-                buffs.bombNoDestroyProb = title.buffValue;
-                break;
-            default:
-                break;
+        
+        const allEffects = [{ type: title.buffType, value: title.buffValue }, ...(title.effects || [])];
+        for (const effect of allEffects) {
+            switch (effect.type) {
+                case BuffType.SCORE_BONUS: buffs.scoreMultiplier = 1 + effect.value; break;
+                case BuffType.BOMB_PROB: buffs.bombProb = effect.value; break;
+                case BuffType.BOMB_RANGE: buffs.bombRangeExtra = effect.value; break;
+                case BuffType.BOMB_SCORE_MULT: buffs.bombScoreMultiplier = effect.value; break;
+                case BuffType.BOMB_NO_DESTROY: buffs.bombNoDestroyProb = effect.value; break;
+                case BuffType.COMBO_GOLD_BONUS: buffs.comboGoldBonus = effect.value; break;
+                case BuffType.MERGE_GOLD_DROP: buffs.mergeGoldDropProb = effect.value; break;
+                case BuffType.GRAVITY_MERGE: buffs.gravityMerge = effect.value > 0; break;
+                case BuffType.UNDO_COUNT: buffs.undoCount = effect.value; break;
+                case BuffType.INITIAL_BOOST: buffs.initialBoost = effect.value > 0; break;
+                case BuffType.CHAIN_EXPLOSION: buffs.chainExplosion = effect.value > 0; break;
+                case BuffType.CLEAR_SMALL_TILES: buffs.clearSmallThreshold = effect.value; break;
+                case BuffType.PAUSE_SPAWN: buffs.pauseSpawnUses = effect.value; break;
+                case BuffType.ABSOLUTE_DOMAIN: buffs.absoluteDomainUses = effect.value; break;
+                case BuffType.MIN_SPAWN_VALUE: buffs.minSpawnValue = effect.value; break;
+                case BuffType.SPAWN_8_PROB: buffs.spawn8Prob = effect.value; break;
+                case BuffType.WIN_2048_REWARD: buffs.win2048Reward = effect.value; break;
+                case BuffType.COMBO_SCORE_MULT: buffs.comboScoreMultiplier = effect.value; break;
+                case BuffType.GAME_OVER_PREVENT: buffs.gameOverPreventUses = effect.value; break;
+                default: break;
+            }
         }
         return buffs;
     }
@@ -1332,8 +1443,15 @@ export class GameManager extends Component {
     /** 获取当前装备称号的金币加成倍率（COIN_BONUS），无称号为 1.0 */
     private getEquippedCoinMultiplier(): number {
         const title = TitleManager.instance.getEquippedTitle();
-        if (title && title.buffType === BuffType.COIN_BONUS) return 1 + title.buffValue;
-        return 1;
+        if (!title) return 1;
+        const allEffects = [{ type: title.buffType, value: title.buffValue }, ...(title.effects || [])];
+        let mult = 1;
+        for (const effect of allEffects) {
+            if (effect.type === BuffType.COIN_BONUS) {
+                mult += effect.value;
+            }
+        }
+        return mult;
     }
 
     private restart(): void {
@@ -1384,7 +1502,6 @@ export class GameManager extends Component {
             if (dur > maxDur) maxDur = dur;
         }
 
-        // 动画全部结束后收尾
         const total = maxDur + 0.02;
         this.scheduleOnce(() => {
             if (moveVersion !== this.moveVersion) return;
@@ -1393,14 +1510,39 @@ export class GameManager extends Component {
             this.scheduleOnce(() => {
                 if (moveVersion !== this.moveVersion) return;
 
-                // 爆炸动画完成后生成新方块并刷新界面。
                 const pos = this.board.spawnTile();
-                if (pos) {
-                    this.addTile(pos.row, pos.col, this.board.grid[pos.row][pos.col], true);
+                this.syncBoardUI();
+                
+                let extraCoins = 0;
+                if (result.comboGoldBonus) {
+                    extraCoins += result.comboGoldBonus;
+                    this.showToast('黄金点金手：连击金币 +'+result.comboGoldBonus);
                 }
-                this.updateScore();
+                if (result.goldDrops) {
+                    extraCoins += result.goldDrops;
+                    this.showToast('无尽财阀：合成掉落金币 +'+result.goldDrops);
+                }
+                
+                const winReward = this.board.consumeWin2048Reward();
+                if (winReward > 0) {
+                    extraCoins += winReward;
+                    this.showToast('创世主脑：达成2048奖励 +'+winReward);
+                }
 
-                // 胜利判定（首次达到当前难度目标）
+                if (extraCoins > 0) {
+                    TitleManager.instance.addCoins(extraCoins);
+                    this.updateCoinsLabel();
+                }
+
+                if (result.chainTriggered) this.showToast('裂变源点：十字爆破！');
+                if (result.smallClearCount && result.smallClearCount > 0) this.showToast(`超新星爆裂：清理 ${result.smallClearCount} 个杂块！`);
+                if (result.gravityMerge) this.showToast('灭世奇点：引力合并！');
+                if (this.board.lastSpawnPaused) this.showToast('绝对零度：停止生成！');
+                if (this.board.lastAbsoluteDomain) this.showToast('熵寂主宰：奇数同化！');
+
+                this.updateScore();
+                this.updateUndoButton(); // Ensure Undo UI is updated
+
                 if (!this.won && this.board.hasWon()) {
                     this.won = true;
                     this.scheduleOnce(() => {
@@ -1410,21 +1552,23 @@ export class GameManager extends Component {
                         }
                     }, 0.3);
                 } else if (this.board.isGameOver()) {
-                    this.scheduleOnce(() => {
-                        if (moveVersion === this.moveVersion) {
-                            this.showOverlay('游戏结束', `得分 ${this.board.score}`, false);
-                        }
-                    }, 0.3);
+                    if (this.board.tryGameOverPrevent()) {
+                        this.showToast('因果掌控者：时光倒流清杂！');
+                        this.syncBoardUI();
+                        this.updateScore();
+                    } else {
+                        this.scheduleOnce(() => {
+                            if (moveVersion === this.moveVersion) {
+                                this.showOverlay('游戏结束', `得分 ${this.board.score}`, false);
+                            }
+                        }, 0.3);
+                    }
                 }
                 this.isAnimating = false;
             }, explosionDuration + 0.02);
         }, total);
     }
 
-    /**
-     * 驱动单条移动记录对应的动画。
-     * @returns 该动画总时长
-     */
     private animateMove(m: TileMove, moveVersion: number): number {
         const sourceTiles = m.sourceIds.map((id) => this.tileMap.get(id));
         const srcTile = sourceTiles[0];
@@ -1532,6 +1676,35 @@ export class GameManager extends Component {
     }
 
     /** 清理旧方块，但保留棋盘背景和 16 个空格子。 */
+    private syncBoardUI(): void {
+        const activeIds = new Set<number>();
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 4; c++) {
+                const tile = this.board.grid[r][c];
+                if (tile.value !== 0) {
+                    activeIds.add(tile.id);
+                    const tv = this.tileMap.get(tile.id);
+                    if (tv) {
+                        tv.value = tile.value;
+                        tv.isBomb = !!tile.isBomb;
+                        tv.row = r;
+                        tv.col = c;
+                        tv.node.setPosition(this.cellPos(r, c));
+                        this.renderTile(tv);
+                    } else {
+                        this.addTile(r, c, tile);
+                    }
+                }
+            }
+        }
+        for (const [id, tv] of this.tileMap.entries()) {
+            if (!activeIds.has(id)) {
+                if (tv.node.isValid) tv.node.destroy();
+                this.tileMap.delete(id);
+            }
+        }
+    }
+
     private clearTiles(): void {
         for (const tile of this.tileMap.values()) {
             if (tile.node.isValid) tile.node.destroy();

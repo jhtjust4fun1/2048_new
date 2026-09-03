@@ -374,6 +374,10 @@ export class TitleManager {
         return SkinManager.instance.getCoins();
     }
 
+    public addCoins(amount: number): void {
+        SkinManager.instance.addCoins(amount);
+    }
+
     public spendCoins(amount: number): boolean {
         return SkinManager.instance.spendCoins(amount);
     }
