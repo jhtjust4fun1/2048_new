@@ -245,6 +245,18 @@ export class BoardLogic {
     /** 撤销用的棋盘快照栈（最近一步在前） */
     private history: { grid: TileData[][]; score: number; energy: number; bombNextSpawn: boolean }[] = [];
 
+    // === 每局次数资源的“累计已用”记账 ===
+    // 局中切换称号时 updateBuffs 会按当前称号刷新剩余次数，
+    // 这里记录本局已消耗的次数，防止通过反复换装重置次数白嫖。
+    /** 本局已用撤销次数（跨称号切换保留） */
+    private undoUsed = 0;
+    /** 本局已用暂停生成次数（跨称号切换保留） */
+    private pauseSpawnUsed = 0;
+    /** 本局已用绝对领域次数（跨称号切换保留） */
+    private absoluteDomainUsed = 0;
+    /** 本局已用卡死回溯次数（跨称号切换保留） */
+    private gameOverPreventUsed = 0;
+
     public constructor(size: number = 4, difficulty: Difficulty = 'easy', buffs: BoardBuffs = {}) {
         if (!Number.isInteger(size) || size < 2) {
             throw new Error('棋盘尺寸必须是大于等于 2 的整数');
@@ -306,10 +318,11 @@ export class BoardLogic {
         };
         
         // Refresh remaining uses based on the new title's buff properties
-        this.undoLeft = this.buffs.undoCount;
-        this.pauseSpawnLeft = this.buffs.pauseSpawnUses;
-        this.absoluteDomainLeft = this.buffs.absoluteDomainUses;
-        this.gameOverPreventLeft = this.buffs.gameOverPreventUses;
+        // 用“配置上限 - 本局已用”计算剩余，换称号不会把已消耗的次数补回来
+        this.undoLeft = Math.max(0, this.buffs.undoCount - this.undoUsed);
+        this.pauseSpawnLeft = Math.max(0, this.buffs.pauseSpawnUses - this.pauseSpawnUsed);
+        this.absoluteDomainLeft = Math.max(0, this.buffs.absoluteDomainUses - this.absoluteDomainUsed);
+        this.gameOverPreventLeft = Math.max(0, this.buffs.gameOverPreventUses - this.gameOverPreventUsed);
     }
 
     /** 重置棋盘，并在两个随机空格生成初始方块。 */
@@ -326,6 +339,10 @@ export class BoardLogic {
         this.absoluteDomainLeft = this.buffs.absoluteDomainUses;
         this.gameOverPreventLeft = this.buffs.gameOverPreventUses;
         this.win2048Rewarded = false;
+        this.undoUsed = 0;
+        this.pauseSpawnUsed = 0;
+        this.absoluteDomainUsed = 0;
+        this.gameOverPreventUsed = 0;
         this.history = [];
         this.spawnTile(false);
         this.spawnTile(false);
@@ -361,14 +378,7 @@ export class BoardLogic {
         this.energy = snap.energy;
         this.bombNextSpawn = snap.bombNextSpawn;
         this.undoLeft--;
-        return true;
-    }
-
-    /** 绝对零度：空格不足 3 个时尝试暂停生成。成功（消耗次数）返回 true。 */
-    public tryPauseSpawn(): boolean {
-        if (this.pauseSpawnLeft <= 0) return false;
-        if (this.emptyCells().length >= 3) return false;
-        this.pauseSpawnLeft--;
+        this.undoUsed++;
         return true;
     }
 
@@ -411,6 +421,7 @@ export class BoardLogic {
             }
         }
         this.absoluteDomainLeft--;
+        this.absoluteDomainUsed++;
         return true;
     }
 
@@ -420,6 +431,7 @@ export class BoardLogic {
         if (!this.isGameOver()) return false;
         
         this.gameOverPreventLeft--;
+        this.gameOverPreventUsed++;
         // 倒流 3 回合
         for (let i = 0; i < 3; i++) {
             if (this.history.length > 0) {
@@ -479,6 +491,7 @@ export class BoardLogic {
         // PAUSE_SPAWN (绝对零度)
         if (this.pauseSpawnLeft > 0 && this.emptyCells().length < 3) {
             this.pauseSpawnLeft--;
+            this.pauseSpawnUsed++;
             this.lastSpawnPaused = true;
             return null;
         }
@@ -877,7 +890,13 @@ export class BoardLogic {
 
                 const tile = this.grid[row][col];
                 if (tile.value === 0 || tile.value > move.value || destroyedIds.has(tile.id)) continue;
-                
+
+                if (noDestroy) {
+                    // BOMB_NO_DESTROY：本次爆炸不毁方块只加分——不记录目标、不标记销毁、不触发十字冲击波
+                    scoreGained += tile.value * 2;
+                    continue;
+                }
+
                 if (this.buffs.chainExplosion && tile.value === move.value) {
                     chainTriggered = true;
                     chainCenters.push({ row, col });
@@ -886,19 +905,16 @@ export class BoardLogic {
                 targetPositions.push({ row, col });
                 targetIds.push(tile.id);
                 scoreGained += tile.value * 2;
-                // 仅真正销毁的方块才标记，避免 BOMB_NO_DESTROY 保留的方块在同一步内被后续爆炸错误免疫
-                if (!noDestroy) {
-                    destroyedIds.add(tile.id);
-                    this.grid[row][col] = this.emptyTile();
-                }
+                destroyedIds.add(tile.id);
+                this.grid[row][col] = this.emptyTile();
             }
 
             this.score += Math.floor(scoreGained * this.buffs.bombScoreMultiplier);
             explosions.push({
                 center: { row: move.to.row, col: move.to.col },
                 value: move.value,
-                targetPositions: noDestroy ? [] : targetPositions,
-                targetIds: noDestroy ? [] : targetIds,
+                targetPositions,
+                targetIds,
                 scoreGained,
             });
         }
