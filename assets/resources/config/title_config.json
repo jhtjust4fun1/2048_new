@@ -2,6 +2,8 @@
   "gachaPrice": 200,
   "gachaTenCount": 10,
   "dailyFreeAdLimit": 5,
+  "gachaSsrRate": 0.01,
+  "gachaMissRate": 0.2,
   "titles": [
     {
       "id": "n_adder",

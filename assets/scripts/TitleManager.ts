@@ -198,6 +198,10 @@ export class TitleManager {
     private _gachaPrice = 200;
     private _gachaTenCount = 10;
     private _dailyFreeAdLimit = 5;
+    /** SSR 独立命中率（先于权重池判定，默认 1%） */
+    private _gachaSsrRate = 0.01;
+    /** 金币付费抽（单抽/十连）的空抽率，默认 20%；广告免费抽不受影响 */
+    private _gachaMissRate = 0.2;
 
     /** 单次抽卡价格（金币），来自配置文件 */
     public get gachaPrice(): number { return this._gachaPrice; }
@@ -205,6 +209,10 @@ export class TitleManager {
     public get gachaTenCount(): number { return this._gachaTenCount; }
     /** 每日广告免费抽次数上限 */
     public get dailyFreeAdLimit(): number { return this._dailyFreeAdLimit; }
+    /** SSR 独立命中率 */
+    public get gachaSsrRate(): number { return this._gachaSsrRate; }
+    /** 金币付费抽空抽率 */
+    public get gachaMissRate(): number { return this._gachaMissRate; }
 
     /** 返回所有称号配置（拷贝，外部修改不影响内部） */
     public getAllConfigs(): TitleConfig[] {
@@ -259,6 +267,8 @@ export class TitleManager {
                 if (typeof data.gachaPrice === 'number') this._gachaPrice = data.gachaPrice;
                 if (typeof data.gachaTenCount === 'number') this._gachaTenCount = data.gachaTenCount;
                 if (typeof data.dailyFreeAdLimit === 'number') this._dailyFreeAdLimit = data.dailyFreeAdLimit;
+                if (typeof data.gachaSsrRate === 'number') this._gachaSsrRate = data.gachaSsrRate;
+                if (typeof data.gachaMissRate === 'number') this._gachaMissRate = data.gachaMissRate;
                 if (data.titles && Array.isArray(data.titles)) {
                     titleConfigs = data.titles.map((t: any) => parseTitleConfig(t));
                 }
@@ -384,9 +394,8 @@ export class TitleManager {
 
     // ==================== 抽卡 ====================
 
-    /** 按权重抽取一个称号（不含 UR）。返回称号 ID，空池返回空字符串。 */
-    public rollTitle(): string {
-        const pool = titleConfigs.filter((t) => t.weight > 0);
+    /** 从指定权重池中按权重抽取一个称号 ID，池为空返回空字符串 */
+    private rollFromPool(pool: TitleConfig[]): string {
         if (pool.length === 0) return '';
         const totalWeight = pool.reduce((sum, t) => sum + t.weight, 0);
         let rand = Math.random() * totalWeight;
@@ -397,20 +406,39 @@ export class TitleManager {
         return pool[pool.length - 1].id;
     }
 
-    /** 单次抽卡（金币），失败返回 null */
+    /**
+     * 抽取一个称号（不含 UR）。
+     * 概率规则：
+     *  - SSR 独立命中率固定为 gachaSsrRate（1%），命中后在 SSR 池内按权重选一；
+     *  - withMiss 为 true（金币单抽/十连）时，每抽先有 gachaMissRate（20%）概率空抽返回 ''；
+     *  - 其余概率由 N/R/SR 按各自 weight 相对共享（SSR 不参与权重池）。
+     */
+    public rollTitle(withMiss = false): string {
+        const ssrPool = titleConfigs.filter((t) => t.rarity === 'SSR' && t.weight > 0);
+        const normalPool = titleConfigs.filter((t) => t.rarity !== 'SSR' && t.weight > 0);
+        if (ssrPool.length === 0 && normalPool.length === 0) return '';
+
+        const missRate = withMiss ? this._gachaMissRate : 0;
+        const r = Math.random();
+        if (r < missRate) return '';                                          // 空抽（仅金币付费抽）
+        if (r < missRate + this._gachaSsrRate) return this.rollFromPool(ssrPool); // SSR 独立 1%
+        return this.rollFromPool(normalPool);                                 // N/R/SR 分享剩余概率
+    }
+
+    /** 单次抽卡（金币），金币不足或抽空返回 null（抽空时金币不退回） */
     public gachaOnce(): TitleConfig | null {
         if (!this.spendCoins(this.gachaPrice)) return null;
-        const id = this.rollTitle();
+        const id = this.rollTitle(true);
         if (!id) return null;
         return this.grantTitle(id);
     }
 
-    /** 观看广告免费单抽（每日限 dailyFreeAdLimit 次），失败返回 null */
+    /** 观看广告免费单抽（每日限 dailyFreeAdLimit 次，无空抽），失败返回 null */
     public gachaFreeAd(): TitleConfig | null {
         if (this.getFreeAdLeftToday() <= 0) return null;
         this.freeAdCount += 1;
         this.saveFreeAdState();
-        const id = this.rollTitle();
+        const id = this.rollTitle(false);
         if (!id) return null;
         return this.grantTitle(id);
     }
@@ -423,7 +451,7 @@ export class TitleManager {
         if (!this.spendCoins(cost)) return [];
         const gained: TitleConfig[] = [];
         for (let i = 0; i < this.gachaTenCount; i++) {
-            const id = this.rollTitle();
+            const id = this.rollTitle(true);
             if (!id) continue;
             gained.push(this.grantTitle(id));
         }

@@ -812,13 +812,17 @@ export class GameManager extends Component {
         this.drawPanel(singleBtn, new Color(150, 110, 220), 10);
         this.makeLabel(`抽 1 次 (${TitleManager.instance.gachaPrice}🪙)`, 20, COLOR_TEXT_LIGHT, singleBtn, Vec3.ZERO);
         singleBtn.on(Node.EventType.TOUCH_END, () => {
+            if (SkinManager.instance.getCoins() < TitleManager.instance.gachaPrice) {
+                this.showToast('金币不足！');
+                return;
+            }
             const result = TitleManager.instance.gachaOnce();
             if (result) {
                 this.showGachaResult([result]);
-                this.refreshTitleUI();
             } else {
-                this.showToast('金币不足！');
+                this.showToast('未中奖，下次好运！');
             }
+            this.refreshTitleUI();
         }, this);
 
         // 免费广告抽按钮
@@ -855,13 +859,18 @@ export class GameManager extends Component {
         this.drawPanel(tenBtn, new Color(200, 120, 40), 10);
         this.makeLabel(`十连 (${TitleManager.instance.gachaPrice * TitleManager.instance.gachaTenCount}🪙)`, 20, COLOR_TEXT_LIGHT, tenBtn, Vec3.ZERO);
         tenBtn.on(Node.EventType.TOUCH_END, () => {
+            const cost = TitleManager.instance.gachaPrice * TitleManager.instance.gachaTenCount;
+            if (SkinManager.instance.getCoins() < cost) {
+                this.showToast('金币不足！');
+                return;
+            }
             const results = TitleManager.instance.gachaTen(false);
             if (results.length > 0) {
                 this.showGachaResult(results);
-                this.refreshTitleUI();
             } else {
-                this.showToast('金币不足！');
+                this.showToast('十连全部落空，再接再厉！');
             }
+            this.refreshTitleUI();
         }, this);
 
         // 广告十连半价按钮
@@ -874,15 +883,20 @@ export class GameManager extends Component {
         this.drawPanel(adTenBtn, new Color(60, 140, 60), 8);
         this.makeLabel('🎬 广告十连半价', 18, COLOR_TEXT_LIGHT, adTenBtn, Vec3.ZERO);
         adTenBtn.on(Node.EventType.TOUCH_END, async () => {
+            const cost = Math.floor(TitleManager.instance.gachaPrice * TitleManager.instance.gachaTenCount / 2);
+            if (SkinManager.instance.getCoins() < cost) {
+                this.showToast('金币不足！');
+                return;
+            }
             const success = await AdManager.instance.showRewardedVideo('title_ten_half');
             if (success) {
                 const results = TitleManager.instance.gachaTen(true);
                 if (results.length > 0) {
                     this.showGachaResult(results);
-                    this.refreshTitleUI();
                 } else {
-                    this.showToast('金币不足！');
+                    this.showToast('十连全部落空，再接再厉！');
                 }
+                this.refreshTitleUI();
             }
         }, this);
 
