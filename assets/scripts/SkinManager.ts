@@ -145,7 +145,7 @@ export class SkinManager {
         // 加载金币
         const savedCoins = sys.localStorage.getItem(KEY_COINS);
         this.coins = savedCoins ? Math.max(0, parseInt(savedCoins, 10) || 0) : 0;
-        this.coins = 9999999; // 【开发测试】强制给满金币
+        // this.coins = 9999999; // 【开发测试】强制给满金币
 
         // 加载已解锁皮肤
         const savedUnlocked = sys.localStorage.getItem(KEY_UNLOCKED);
