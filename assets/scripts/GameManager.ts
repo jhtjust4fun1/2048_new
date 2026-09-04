@@ -490,6 +490,8 @@ export class GameManager extends Component {
                     this.board.energy = this.board.maxEnergy;
                     this.updateEnergy(this.board.energy, this.board.maxEnergy);
                     // 满能量爆火花特效已经在 updateEnergy 中处理了
+                } else if (!success) {
+                    this.showRewardedAdFailureToast();
                 }
             }, this);
         }
@@ -699,6 +701,8 @@ export class GameManager extends Component {
                             SkinManager.instance.equipSkin(skin.id);
                         }
                         this.onSkinChanged(); // 刷新商店与界面
+                    } else {
+                        this.showRewardedAdFailureToast();
                     }
                 }, this);
             }
@@ -873,6 +877,8 @@ export class GameManager extends Component {
                     this.showGachaResult([result]);
                     this.refreshTitleUI();
                 }
+            } else {
+                this.showRewardedAdFailureToast();
             }
         }, this);
 
@@ -924,6 +930,8 @@ export class GameManager extends Component {
                     this.showToast('十连全部落空，再接再厉！');
                 }
                 this.refreshTitleUI();
+            } else {
+                this.showRewardedAdFailureToast();
             }
         }, this);
 
@@ -1254,6 +1262,10 @@ export class GameManager extends Component {
         this.scheduleOnce(() => {
             if (toast.isValid) toast.destroy();
         }, duration / 1000);
+    }
+
+    private showRewardedAdFailureToast(): void {
+        this.showToast('广告加载失败，未发放奖励');
     }
 
     private openTitle(): void {
@@ -2385,6 +2397,8 @@ export class GameManager extends Component {
                             }
                         });
                     });
+                } else {
+                    this.showRewardedAdFailureToast();
                 }
             }, this);
         }
@@ -2407,6 +2421,8 @@ export class GameManager extends Component {
                         this.doubleCoinButtonNode!.active = false; // 隐藏防多次点击
                         this.resultSubtitle.string = this.resultSubtitle.string + '\n(已翻倍)';
                         this.updateCoinsLabel();
+                    } else {
+                        this.showRewardedAdFailureToast();
                     }
                 }
             }, this);

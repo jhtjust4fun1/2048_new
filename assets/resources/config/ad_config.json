@@ -1,0 +1,28 @@
+{
+  "enabled": true,
+  "wechatGame": {
+    "bannerAdUnitId": "",
+    "rewardedAdUnitId": "",
+    "interstitialAdUnitId": "",
+    "banner": {
+      "enabled": true,
+      "bottomOffset": 0
+    },
+    "rewarded": {
+      "enabled": true,
+      "loadTimeoutMs": 10000,
+      "scenarios": {
+        "revive": true,
+        "double_coin": true,
+        "energy_refill": true,
+        "shop_freebie": true,
+        "title_free_gacha": true,
+        "title_ten_half": true
+      }
+    },
+    "interstitial": {
+      "enabled": true,
+      "requestInterval": 3
+    }
+  }
+}

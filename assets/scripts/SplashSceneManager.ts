@@ -21,12 +21,13 @@ export class SplashSceneManager extends Component {
         imgNode.layer = this.node.layer;
         this.node.addChild(imgNode);
         const imgTrans = imgNode.addComponent(UITransform);
-        imgTrans.setContentSize(720, 720); // 方形图居中
+        imgTrans.setContentSize(720, 1280); // 使用竖屏全屏背景图
         const sprite = imgNode.addComponent(Sprite);
+        sprite.sizeMode = Sprite.SizeMode.CUSTOM;
         
-        resources.load('skin/splash_bg/spriteFrame', SpriteFrame, (err, sf) => {
+        resources.load('game_res/game_1/spriteFrame', SpriteFrame, (err, sf) => {
             if (err) {
-                error('Failed to load splash_bg:', err);
+                error('Failed to load game_res/game_1:', err);
                 return;
             }
             if (this.node && this.node.isValid) {
@@ -44,6 +45,7 @@ export class SplashSceneManager extends Component {
         titleLabel.fontSize = 64;
         titleLabel.isBold = true;
         titleLabel.color = new Color(255, 220, 80);
+        titleNode.active = false;
 
         // 闪烁特效 - 标题呼吸
         const op = titleNode.addComponent(UIOpacity);

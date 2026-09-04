@@ -8,7 +8,7 @@
 - Banner 广告：难度选择、皮肤商店、称号面板等非核心操作界面。
 - 插屏广告：按游戏流程间隔展示。
 
-> 重要：当前仓库中的 `assets/scripts/AdManager.ts` 还没有真正调用微信广告 API。它现在会在网页或未接入的平台中用 `setTimeout` 模拟激励视频成功，插屏和 Banner 也只有日志。因此不能直接将当前版本作为正式广告版本发布。
+> 重要：当前仓库已经在 `assets/scripts/AdManager.ts` 中接入微信小游戏广告 API，并通过 `assets/resources/config/ad_config.json` 读取广告位配置。配置文件中的广告位 ID 当前为空，替换为微信后台真实 ID 后才能在微信真机中展示广告。
 
 ## 一、先确认发布目标
 
@@ -51,22 +51,21 @@ wx.createInterstitialAd(...)
 
 ### 2. 当前 `AdManager.ts` 的实际状态
 
-当前实现的主要行为如下：
+当前实现按运行平台区分行为：微信小游戏调用真实广告 API，Web/编辑器预览继续使用模拟广告。微信环境下会区分：
 
 ```ts
 showRewardedVideo(scenario: string): Promise<boolean>
 ```
-
-无论传入什么场景，当前都会延迟约 1 秒后返回 `true`。它没有区分：
 
 - 广告是否成功加载；
 - 广告是否真正展示；
 - 用户是否看完广告；
 - 用户是否中途关闭；
 - 当前广告位是否无广告库存；
-- 微信 API 是否返回错误。
+- 微信 API 是否返回错误；
+- 广告位 ID 是否已经配置。
 
-正式版必须只在微信激励视频的 `onClose` 回调确认完整观看后返回 `true`。
+微信正式版只在激励视频的 `onClose` 回调确认完整观看后返回 `true`。广告位 ID 为空时不会调用创建广告对象，业务调用会得到 `false`，游戏继续运行。
 
 ## 三、微信公众平台准备工作
 
@@ -175,7 +174,7 @@ assets/resources/config/ad_config.json
 
 1. 确认当前项目能正常打开 `assets/scenes/Splash.scene` 和 `assets/scenes/Main.scene`。
 2. 确认 `assets/scripts/AdManager.ts`、`GameManager.ts` 和其 `.meta` 文件存在。
-3. 确认 `assets/resources/config/ad_config.json` 被放在 `resources` 目录下，或者改用项目现有的配置加载方式。
+3. 确认 `assets/resources/config/ad_config.json` 被放在 `resources` 目录下，并填入真实广告位 ID。
 4. 确认构建平台选择“微信小游戏”。
 5. 填写微信小游戏 AppID。
 6. 选择构建目录，例如：
@@ -564,14 +563,13 @@ this.coins = 9999999; // 【开发测试】强制给满金币
 按当前项目的最小改动原则，建议按以下顺序实施：
 
 1. 在微信公众平台创建小游戏和三个广告位。
-2. 新增 `assets/resources/config/ad_config.json`，先填入测试配置或占位配置。
-3. 扩展 `AdManager.ts` 的配置读取和微信平台初始化。
-4. 实现激励视频，并优先验证 `revive`、`energy_refill` 两个低风险场景。
-5. 实现 Banner，验证难度选择、商店和称号界面。
-6. 实现插屏，验证失败不阻塞游戏流程。
-7. 为所有广告按钮增加请求中状态和重复点击保护。
-8. 在真机完成完整广告矩阵测试。
-9. 移除 `SkinManager.ts` 的测试金币逻辑。
-10. 构建微信小游戏，提交体验版，再根据审核和数据调整展示频率。
+2. 将微信后台的广告位 ID 填入 `assets/resources/config/ad_config.json`。
+3. 构建微信小游戏，并优先验证 `revive`、`energy_refill` 两个低风险场景。
+4. 在真机验证 Banner 的难度选择、商店和称号界面生命周期。
+5. 在真机验证插屏失败不会阻塞游戏流程。
+6. 为所有广告按钮增加请求中状态和重复点击保护。
+7. 在真机完成完整广告矩阵测试。
+8. 移除 `SkinManager.ts` 的测试金币逻辑。
+9. 提交体验版，再根据审核和数据调整展示频率。
 
-当前最重要的结论是：`AdManager.ts` 已经提供了业务层接口，现有 `GameManager.ts` 的广告场景也基本接好；下一步不是重写游戏逻辑，而是把 `AdManager` 的模拟实现替换成微信小游戏 API，并补上真实广告位配置、失败处理、重复点击保护和真机验证。
+当前最重要的结论是：`AdManager.ts` 已经提供了业务层接口并完成微信小游戏广告 API 封装，现有 `GameManager.ts` 的广告场景也基本接好；下一步是将真实广告位 ID 填入配置文件，构建微信小游戏并完成真机验证。
