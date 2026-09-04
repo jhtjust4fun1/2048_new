@@ -9,7 +9,6 @@ export type Difficulty = 'easy' | 'normal' | 'hard' | 'nightmare';
 
 export interface DifficultyConfig {
     label: string;
-    target: number;
     /** 每次合并获得的能量值 */
     energyPerMerge: number;
     /** 触发下一个炸弹所需的最小 Combo 数 */
@@ -23,7 +22,6 @@ export interface DifficultyConfig {
 export const DIFFICULTY_CONFIGS: Record<Difficulty, DifficultyConfig> = {
     easy: {
         label: '简单',
-        target: 1024,
         energyPerMerge: 30,
         comboForBomb: 2,
         spawnWeights: [{ value: 2, prob: 0.90 }, { value: 4, prob: 0.10 }],
@@ -31,26 +29,23 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, DifficultyConfig> = {
     },
     normal: {
         label: '中等',
-        target: 2048,
         energyPerMerge: 20,
         comboForBomb: 3,
-        spawnWeights: [{ value: 2, prob: 0.85 }, { value: 4, prob: 0.15 }],
+        spawnWeights: [{ value: 2, prob: 0.93 }, { value: 4, prob: 0.07 }],
         coinRate: 50,
     },
     hard: {
         label: '困难',
-        target: 4096,
         energyPerMerge: 15,
-        comboForBomb: 4,
-        spawnWeights: [{ value: 2, prob: 0.75 }, { value: 4, prob: 0.20 }, { value: 8, prob: 0.05 }],
+        comboForBomb: 5,
+        spawnWeights: [{ value: 2, prob: 0.96 }, { value: 4, prob: 0.035 }, { value: 8, prob: 0.005 }],
         coinRate: 25,
     },
     nightmare: {
         label: '噩梦',
-        target: 8192,
         energyPerMerge: 10,
-        comboForBomb: 5,
-        spawnWeights: [{ value: 2, prob: 0.65 }, { value: 4, prob: 0.25 }, { value: 8, prob: 0.10 }],
+        comboForBomb: 7,
+        spawnWeights: [{ value: 2, prob: 0.98 }, { value: 4, prob: 0.018 }, { value: 8, prob: 0.002 }],
         coinRate: 10,
     },
 };
@@ -764,15 +759,6 @@ export class BoardLogic {
             removedPositions.push(pos);
         }
         return removedPositions;
-    }
-
-    public hasWon(target: number = this.config.target): boolean {
-        for (const row of this.grid) {
-            for (const tile of row) {
-                if (tile.value >= target) return true;
-            }
-        }
-        return false;
     }
 
     private get config(): DifficultyConfig {

@@ -18,6 +18,7 @@ export interface SkinConfig {
     description: string;           // 描述
     boardBg: Color;                // 棋盘背景色
     cellBg: Color;                 // 空格子背景色
+    pageBg: Color;                 // 游戏页面背景色
     resName?: string;              // 对应 resources/skin 下的 PNG 图片资源名称
     colors: TileColorStyle[];      // 各数值方块样式 (2, 4, 8, 16 ... 4096+)
 }
@@ -31,6 +32,7 @@ export const SKIN_CONFIGS: SkinConfig[] = [
         description: '温馨自然的经典原木风质感格子',
         boardBg: new Color(187, 173, 160),
         cellBg: new Color(205, 193, 180),
+        pageBg: new Color(250, 248, 239),
         resName: 'classic_wood',
         colors: [
             { bg: new Color(238, 228, 218), text: new Color(119, 110, 101) }, // 2
@@ -54,6 +56,7 @@ export const SKIN_CONFIGS: SkinConfig[] = [
         description: '充满科幻感的炫酷赛博发光线框',
         boardBg: new Color(30, 30, 46),
         cellBg: new Color(45, 45, 68),
+        pageBg: new Color(10, 20, 45),
         resName: 'cyber_neon',
         colors: [
             { bg: new Color(68, 71, 90), text: new Color(248, 248, 242) },    // 2
@@ -77,6 +80,7 @@ export const SKIN_CONFIGS: SkinConfig[] = [
         description: '复古 8-Bit 像素立性质感方块',
         boardBg: new Color(24, 24, 24),
         cellBg: new Color(38, 38, 38),
+        pageBg: new Color(28, 28, 28),
         resName: 'retro_8bit',
         colors: [
             { bg: new Color(55, 55, 55), text: new Color(220, 220, 220) },    // 2
@@ -100,6 +104,7 @@ export const SKIN_CONFIGS: SkinConfig[] = [
         description: '硬核工业斜纹警示扣件方块',
         boardBg: new Color(225, 215, 205),
         cellBg: new Color(238, 230, 222),
+        pageBg: new Color(255, 220, 232),
         resName: 'hazard_industrial',
         colors: [
             { bg: new Color(245, 223, 218), text: new Color(105, 90, 85) },   // 2
@@ -229,6 +234,10 @@ export class SkinManager {
 
     public getEquippedSkin(): SkinConfig {
         return this.getSkinConfig(this.equippedSkinId) || SKIN_CONFIGS[0];
+    }
+
+    public getPageBackgroundColor(): Color {
+        return this.getEquippedSkin().pageBg;
     }
 
     public isSkinUnlocked(skinId: string): boolean {

@@ -12,7 +12,7 @@ import {
     _decorator, Component, Node, Graphics, Label, Color, tween, Vec3,
     UITransform, sys, input, Input, EventKeyboard, KeyCode,
     EventTouch, Vec2, UIOpacity, Layers, resources, SpriteFrame, Sprite, Texture2D,
-    view, ResolutionPolicy, Tween, BlockInputEvents,
+    view, ResolutionPolicy, Tween, BlockInputEvents, Camera,
 } from 'cc';
 import {
     BoardLogic, Difficulty, DIFFICULTY_CONFIGS, Direction, ExplosionEvent,
@@ -72,6 +72,7 @@ const COLOR_TEXT_DARK = new Color(119, 110, 101);
 const COLOR_TEXT_LIGHT = new Color(249, 246, 242);
 const COLOR_MASK = new Color(0, 0, 0, 160);
 const COLOR_ENERGY_BG = new Color(120, 99, 83);
+const COLOR_TITLE_STATUS_BG = new Color(126, 76, 176);
 
 // 动画时长（秒）
 const MOVE_DURATION = 0.1;
@@ -134,6 +135,9 @@ export class GameManager extends Component {
     private titleButton!: Node;
     private titleOverlay!: Node;
     private titlePanel!: Node;
+    private titleStatusNode: Node | null = null;
+    private titleStatusLabel: Label | null = null;
+    private pageBackgroundNode: Node | null = null;
     private lastScore = 0;
     private coinsEarnedThisGame = 0;
     private hasRevivedThisGame = false;
@@ -152,7 +156,6 @@ export class GameManager extends Component {
     private isAnimating = false;
     private moveVersion = 0;
     private gameStarted = false;
-    private won = false;
     private bestScore = 0;
     private difficulty: Difficulty = 'easy';
     private touchStart: Vec2 | null = null;
@@ -243,6 +246,9 @@ export class GameManager extends Component {
         this.drawPanel(this.bestLabel.node.parent!, COLOR_PANEL_BG, 10);
         this.addPanelTitle(this.scoreLabel.node.parent!, '当前');
         this.addPanelTitle(this.bestLabel.node.parent!, '最高');
+        this.difficultyLabel.string = `难度：${DIFFICULTY_CONFIGS[this.difficulty].label}`;
+        this.difficultyLabel.color = COLOR_TEXT_DARK;
+        this.difficultyLabel.isBold = true;
         this.drawPanel(this.newGameButton, COLOR_BTN_BG, 10);
         this.drawPanel(this.easyButton, COLOR_BTN_BG, 10);
         this.drawPanel(this.normalButton, COLOR_BTN_BG, 10);
@@ -275,6 +281,7 @@ export class GameManager extends Component {
             restartLabel.verticalAlign = Label.VerticalAlign.CENTER;
         }
         this.drawBoardGraphics();
+        this.updatePageTheme();
         this.drawEnergyBarBackground();
         this.initEnergyParticleLayer();
         this.drawPanel(this.difficultyPanel, new Color(250, 248, 239), 14);
@@ -290,6 +297,57 @@ export class GameManager extends Component {
         this.buildTitleOverlayUI();
         // 提前预热称号配置加载（标题 UI 构建时即触发，避免进入面板后等待）
         TitleManager.instance.ensureLoadOnce();
+        this.createTitleStatusUI();
+        TitleManager.instance.whenReady(() => {
+            if (this.node.isValid) this.updateTitleStatusLabel();
+        });
+    }
+
+    /** 创建游戏页分数下方的称号生效状态条。 */
+    private createTitleStatusUI(): void {
+        let statusNode = this.node.getChildByName('TitleStatus');
+        if (!statusNode) {
+            statusNode = new Node('TitleStatus');
+            statusNode.layer = Layers.Enum.UI_2D;
+            statusNode.setPosition(0, 356, 5);
+            this.node.addChild(statusNode);
+            const transform = statusNode.addComponent(UITransform);
+            transform.setContentSize(500, 28);
+            this.drawPanel(statusNode, COLOR_TITLE_STATUS_BG, 8);
+
+            const labelNode = new Node('Label');
+            labelNode.layer = Layers.Enum.UI_2D;
+            labelNode.setPosition(0, 0, 1);
+            statusNode.addChild(labelNode);
+            const labelTransform = labelNode.addComponent(UITransform);
+            labelTransform.setContentSize(480, 28);
+            const label = labelNode.addComponent(Label);
+            label.fontSize = 16;
+            label.lineHeight = 22;
+            label.color = COLOR_TEXT_LIGHT;
+            label.isBold = true;
+            label.horizontalAlign = Label.HorizontalAlign.CENTER;
+            label.verticalAlign = Label.VerticalAlign.CENTER;
+            label.overflow = Label.Overflow.SHRINK;
+            this.titleStatusLabel = label;
+        } else {
+            this.titleStatusLabel = statusNode.getChildByName('Label')?.getComponent(Label) || null;
+        }
+        this.titleStatusNode = statusNode;
+        this.updateTitleStatusLabel();
+    }
+
+    /** 根据当前装备称号显示或隐藏状态条。 */
+    private updateTitleStatusLabel(): void {
+        if (!this.titleStatusNode || !this.titleStatusNode.isValid || !this.titleStatusLabel) return;
+        const title = TitleManager.instance.getEquippedTitle();
+        if (!title) {
+            this.titleStatusNode.active = false;
+            return;
+        }
+
+        this.titleStatusLabel.string = `${title.rarity} 称号【${title.name}】佩戴生效中`;
+        this.titleStatusNode.active = true;
     }
 
     private createCoinUI(): void {
@@ -535,7 +593,7 @@ export class GameManager extends Component {
         this.makeLabel('✕', 26, COLOR_TEXT_LIGHT, closeBtn, Vec3.ZERO);
         closeBtn.on(Node.EventType.TOUCH_END, () => {
             this.shopOverlay.active = false;
-            if (!this.difficultyOverlay.active && !this.resultOverlay.active) {
+            if (!this.hasActiveModalOverlay()) {
                 AdManager.instance.hideBanner();
             }
         }, this);
@@ -711,6 +769,7 @@ export class GameManager extends Component {
 
     private openShop(): void {
         if (!this.shopOverlay) return;
+        this.closeOtherOverlays(this.shopOverlay);
         this.refreshShopUI();
         this.shopOverlay.active = true;
         AdManager.instance.showBanner();
@@ -759,7 +818,7 @@ export class GameManager extends Component {
         this.makeLabel('✕', 26, COLOR_TEXT_LIGHT, closeBtn, Vec3.ZERO);
         closeBtn.on(Node.EventType.TOUCH_END, () => {
             this.titleOverlay.active = false;
-            if (!this.difficultyOverlay.active && !this.resultOverlay.active) {
+            if (!this.hasActiveModalOverlay()) {
                 AdManager.instance.hideBanner();
             }
         }, this);
@@ -1035,6 +1094,7 @@ export class GameManager extends Component {
                         this.board.updateBuffs(this.getEquippedBuffs());
                         this.updateUndoButton();
                     }
+                    this.updateTitleStatusLabel();
                     this.refreshTitleUI();
                 }, this);
             } else {
@@ -1270,6 +1330,7 @@ export class GameManager extends Component {
 
     private openTitle(): void {
         if (!this.titleOverlay) return;
+        this.closeOtherOverlays(this.titleOverlay);
         this.titleOverlay.active = true;
         AdManager.instance.showBanner();
         this.refreshTitleUI();
@@ -1287,9 +1348,43 @@ export class GameManager extends Component {
     }
 
     private onSkinChanged(): void {
+        this.updatePageTheme();
         this.drawBoardGraphics();
         this.tileMap.forEach((tv) => this.renderTile(tv));
         this.refreshShopUI();
+    }
+
+    /** 将当前皮肤的页面背景色同步到主相机。 */
+    private updatePageTheme(): void {
+        const color = SkinManager.instance.getPageBackgroundColor();
+        let background = this.pageBackgroundNode;
+        if (!background || !background.isValid) {
+            background = this.node.getChildByName('ThemeBackground');
+            if (!background) {
+                background = new Node('ThemeBackground');
+                background.layer = Layers.Enum.UI_2D;
+                this.node.addChild(background);
+                background.addComponent(UITransform);
+                background.addComponent(Graphics);
+            }
+            this.pageBackgroundNode = background;
+        }
+
+        const transform = background.getComponent(UITransform);
+        const graphics = background.getComponent(Graphics);
+        if (transform && graphics) {
+            transform.setContentSize(720, 1280);
+            background.setPosition(0, 0, -100);
+            graphics.clear();
+            graphics.fillColor = color;
+            graphics.rect(-360, -640, 720, 1280);
+            graphics.fill();
+            // 保证页面背景位于所有游戏 UI 和弹窗之后，不阻挡按钮触摸。
+            background.setSiblingIndex(0);
+        }
+
+        const camera = this.node.parent?.getChildByName('Camera')?.getComponent(Camera);
+        if (camera) camera.clearColor = color;
     }
 
     private drawPanel(node: Node, color: Color, radius: number): void {
@@ -1414,6 +1509,7 @@ export class GameManager extends Component {
 
     private showDifficultySelection(): void {
         this.runWithInterstitialTransition(() => {
+            this.closeOtherOverlays(this.difficultyOverlay);
             this.difficultyOverlay.active = true;
             this.resultOverlay.active = false;
             AdManager.instance.showBanner();
@@ -1442,7 +1538,7 @@ export class GameManager extends Component {
         this.hasRevivedThisGame = false;
         this.board = new BoardLogic(4, this.difficulty, this.getEquippedBuffs()); // 构造函数 reset() 已生成 2 个方块
         this.gameStarted = true;
-        this.won = false;
+        this.updateTitleStatusLabel();
         this.clearTiles();
         // 渲染棋盘上所有已有方块（避免重复 spawn）
         for (let r = 0; r < 4; r++) {
@@ -1596,15 +1692,7 @@ export class GameManager extends Component {
                 this.updateScore();
                 this.updateUndoButton(); // Ensure Undo UI is updated
 
-                if (!this.won && this.board.hasWon()) {
-                    this.won = true;
-                    this.scheduleOnce(() => {
-                        if (moveVersion === this.moveVersion) {
-                            const target = DIFFICULTY_CONFIGS[this.difficulty].target;
-                            this.showOverlay('你赢了！', `已达到 ${target}，继续滑动即可不断挑战`, true);
-                        }
-                    }, 0.3);
-                } else if (this.board.isGameOver()) {
+                if (this.board.isGameOver()) {
                     if (this.board.tryGameOverPrevent()) {
                         this.showToast('因果掌控者：时光倒流清杂！');
                         this.syncBoardUI();
@@ -2352,6 +2440,7 @@ export class GameManager extends Component {
 
     private showOverlay(title: string, subtitle: string, isWin: boolean): void {
         if (this.resultOverlay.active) return;
+        this.closeOtherOverlays(this.resultOverlay);
         this.resultTitle.string = title;
         this.resultSubtitle.string = `${subtitle}\n本局获得: 🪙 ${this.coinsEarnedThisGame}`;
         
@@ -2446,6 +2535,31 @@ export class GameManager extends Component {
 
     private closeOverlay(): void {
         this.resultOverlay.active = false;
+    }
+
+    /** 保证同一时间只有一个弹窗可见，并将当前弹窗置于最上层。 */
+    private closeOtherOverlays(activeOverlay: Node): void {
+        const overlays = [
+            this.shopOverlay,
+            this.titleOverlay,
+            this.difficultyOverlay,
+            this.resultOverlay,
+        ];
+        overlays.forEach((overlay) => {
+            if (overlay && overlay !== activeOverlay && overlay.isValid) {
+                overlay.active = false;
+            }
+        });
+        activeOverlay.setSiblingIndex(this.node.children.length - 1);
+    }
+
+    private hasActiveModalOverlay(): boolean {
+        return [
+            this.shopOverlay,
+            this.titleOverlay,
+            this.difficultyOverlay,
+            this.resultOverlay,
+        ].some((overlay) => overlay && overlay.isValid && overlay.active);
     }
 
     // ==================== 工具方法 ====================
