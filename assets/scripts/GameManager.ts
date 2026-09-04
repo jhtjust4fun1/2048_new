@@ -248,7 +248,32 @@ export class GameManager extends Component {
         this.drawPanel(this.normalButton, COLOR_BTN_BG, 10);
         this.drawPanel(this.hardButton, COLOR_BTN_BG, 10);
         this.drawPanel(this.nightmareButton, COLOR_BTN_BG, 10);
+        // RestartButton 的场景 Label 挂在按钮自身节点上，drawPanel 会把背景画进子节点并盖住按钮文字
+        // （子节点渲染晚于父组件）。先将文字迁移到子 Label 节点（与难度/满能量等按钮结构一致），再绘制背景。
+        const restartLabelComp = this.resultRestartButton.getComponent(Label);
+        let restartButtonText = '';
+        let restartButtonFontSize = 0;
+        let restartButtonColor: Color | null = null;
+        if (restartLabelComp) {
+            restartButtonText = restartLabelComp.string || '再来一局';
+            restartButtonFontSize = restartLabelComp.fontSize;
+            restartButtonColor = restartLabelComp.color.clone();
+            this.resultRestartButton.removeComponent(restartLabelComp);
+        }
         this.drawPanel(this.resultRestartButton, COLOR_BTN_BG, 10);
+        if (restartButtonColor) {
+            const restartLabelNode = new Node('Label');
+            restartLabelNode.layer = this.resultRestartButton.layer;
+            restartLabelNode.setPosition(0, 0, 1);
+            this.resultRestartButton.addChild(restartLabelNode);
+            const restartLabel = restartLabelNode.addComponent(Label);
+            restartLabel.string = restartButtonText;
+            restartLabel.fontSize = restartButtonFontSize;
+            restartLabel.lineHeight = Math.round(restartButtonFontSize * 1.3);
+            restartLabel.color = restartButtonColor;
+            restartLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
+            restartLabel.verticalAlign = Label.VerticalAlign.CENTER;
+        }
         this.drawBoardGraphics();
         this.drawEnergyBarBackground();
         this.initEnergyParticleLayer();
@@ -414,8 +439,8 @@ export class GameManager extends Component {
             panel.addChild(titleNode);
             const label = titleNode.addComponent(Label);
             label.string = title;
-            label.fontSize = 14;
-            label.lineHeight = 18;
+            label.fontSize = 20;
+            label.lineHeight = 26;
             label.color = COLOR_TEXT_LIGHT;
             label.horizontalAlign = Label.HorizontalAlign.CENTER;
             label.verticalAlign = Label.VerticalAlign.CENTER;
@@ -431,8 +456,8 @@ export class GameManager extends Component {
         if (!adEnergyBtn) {
             adEnergyBtn = new Node('AdEnergyButton');
             adEnergyBtn.layer = Layers.Enum.UI_2D;
-            // 放置在能量条右侧
-            adEnergyBtn.setPosition(250, 485, 0);
+            // 能量条位于棋盘正下方 (0, -330)，按钮紧随其下居中，与能量区成组便于点按
+            adEnergyBtn.setPosition(0, -375, 0);
             this.node.addChild(adEnergyBtn);
             const transform = adEnergyBtn.addComponent(UITransform);
             transform.setContentSize(120, 40);
@@ -1755,6 +1780,109 @@ export class GameManager extends Component {
         if (transform) {
             transform.setContentSize(cs, cs);
         }
+        this.updateBombFuseEffect(tv.node, tv.isBomb);
+    }
+
+    /** 更新炸弹引线与火花；炸弹合成后变为普通方块时同步移除特效。 */
+    private updateBombFuseEffect(tileNode: Node, isBomb: boolean): void {
+        const oldEffect = tileNode.getChildByName('BombFuse');
+        if (!isBomb) {
+            if (oldEffect?.isValid) oldEffect.destroy();
+            return;
+        }
+        if (oldEffect?.isValid) return;
+
+        const fuseNode = new Node('BombFuse');
+        fuseNode.layer = tileNode.layer;
+        fuseNode.setPosition(0, 0, 2);
+        tileNode.addChild(fuseNode);
+
+        // 引线从炸弹右上方弯向外侧，使用双层描边增强在不同皮肤上的可见度。
+        const fuse = fuseNode.addComponent(Graphics);
+        fuse.lineWidth = 6;
+        fuse.strokeColor = new Color(74, 43, 31, 255);
+        fuse.moveTo(28, 45);
+        fuse.bezierCurveTo(46, 52, 19, 63, 39, 76);
+        fuse.stroke();
+        fuse.lineWidth = 2;
+        fuse.strokeColor = new Color(244, 180, 68, 255);
+        fuse.moveTo(28, 45);
+        fuse.bezierCurveTo(46, 52, 19, 63, 39, 76);
+        fuse.stroke();
+
+        const sparkNode = new Node('Spark');
+        sparkNode.layer = tileNode.layer;
+        sparkNode.setPosition(39, 76, 1);
+        fuseNode.addChild(sparkNode);
+
+        const sparkCore = sparkNode.addComponent(Graphics);
+        sparkCore.circle(0, 0, 5);
+        sparkCore.fillColor = new Color(255, 238, 145, 255);
+        sparkCore.fill();
+        sparkCore.lineWidth = 2;
+        sparkCore.strokeColor = new Color(255, 140, 38, 255);
+        sparkCore.circle(0, 0, 7);
+        sparkCore.stroke();
+
+        // 多个独立粒子从引线顶端向外喷射，节点销毁时其 Tween 会随父节点一并结束。
+        const sprayTargets = [
+            new Vec3(-18, 14, 0),
+            new Vec3(-10, 23, 0),
+            new Vec3(2, 26, 0),
+            new Vec3(14, 20, 0),
+            new Vec3(21, 9, 0),
+        ];
+        sprayTargets.forEach((target, index) => {
+            const particle = new Node(`SparkParticle${index}`);
+            particle.layer = tileNode.layer;
+            sparkNode.addChild(particle);
+
+            const particleGraphics = particle.addComponent(Graphics);
+            particleGraphics.lineWidth = 2.5;
+            particleGraphics.strokeColor = index % 2 === 0
+                ? new Color(255, 224, 112, 255)
+                : new Color(255, 132, 38, 255);
+            particleGraphics.moveTo(0, 0);
+            particleGraphics.lineTo(-target.x * 0.16, -target.y * 0.16);
+            particleGraphics.stroke();
+            particleGraphics.circle(0, 0, 2.5);
+            particleGraphics.fillColor = new Color(255, 235, 140, 255);
+            particleGraphics.fill();
+
+            const opacity = particle.addComponent(UIOpacity);
+            opacity.opacity = 255;
+            tween(particle)
+                .repeatForever(
+                    tween(particle)
+                        .delay(index * 0.07)
+                        .to(0.28, { position: target, scale: new Vec3(0.45, 0.45, 1) })
+                        .call(() => {
+                            if (particle.isValid) {
+                                particle.setPosition(0, 0, 0);
+                                particle.setScale(1, 1, 1);
+                            }
+                        }),
+                )
+                .start();
+            tween(opacity)
+                .repeatForever(
+                    tween(opacity)
+                        .delay(index * 0.07)
+                        .to(0.28, { opacity: 0 })
+                        .call(() => {
+                            if (opacity.isValid) opacity.opacity = 255;
+                        }),
+                )
+                .start();
+        });
+
+        tween(sparkNode)
+            .repeatForever(
+                tween(sparkNode)
+                    .to(0.16, { scale: new Vec3(1.25, 1.25, 1) })
+                    .to(0.16, { scale: new Vec3(0.85, 0.85, 1) }),
+            )
+            .start();
     }
 
     private bombColor(): { bg: Color; text: Color } {
