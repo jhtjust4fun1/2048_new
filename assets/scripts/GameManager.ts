@@ -73,6 +73,12 @@ const COLOR_TEXT_LIGHT = new Color(249, 246, 242);
 const COLOR_MASK = new Color(0, 0, 0, 160);
 const COLOR_ENERGY_BG = new Color(120, 99, 83);
 const COLOR_TITLE_STATUS_BG = new Color(126, 76, 176);
+const COLOR_RESULT_BG = new Color(24, 43, 67);
+const COLOR_RESULT_CARD = new Color(48, 69, 88);
+const COLOR_RESULT_YELLOW = new Color(255, 214, 0);
+const COLOR_RESULT_MUTED = new Color(188, 194, 201);
+const COLOR_RESULT_BUTTON_PINK = new Color(255, 48, 104);
+const COLOR_RESULT_BUTTON_DARK = new Color(48, 48, 48);
 
 // 动画时长（秒）
 const MOVE_DURATION = 0.1;
@@ -138,8 +144,13 @@ export class GameManager extends Component {
     private titleStatusNode: Node | null = null;
     private titleStatusLabel: Label | null = null;
     private pageBackgroundNode: Node | null = null;
+    private resultScoreLabel: Label | null = null;
+    private resultCoinsLabel: Label | null = null;
+    private resultCoinBuffLabel: Label | null = null;
     private lastScore = 0;
     private coinsEarnedThisGame = 0;
+    private coinBonusEarnedThisGame = 0;
+    private coinBonusRateThisGame = 0;
     private hasRevivedThisGame = false;
     private reviveButtonNode: Node | null = null;
     private doubleCoinButtonNode: Node | null = null;
@@ -288,6 +299,7 @@ export class GameManager extends Component {
         this.drawPanel(this.resultPanel, new Color(250, 248, 239), 14);
         this.drawOverlayMask(this.difficultyOverlay);
         this.drawOverlayMask(this.resultOverlay);
+        this.setupResultOverlayUI();
         this.updateEnergy(0, 100);
 
         this.createCoinUI();
@@ -300,6 +312,203 @@ export class GameManager extends Component {
         this.createTitleStatusUI();
         TitleManager.instance.whenReady(() => {
             if (this.node.isValid) this.updateTitleStatusLabel();
+        });
+    }
+
+    /** 按参考图重排结束页，保留场景已有结果弹窗节点和按钮绑定。 */
+    private setupResultOverlayUI(): void {
+        const overlayGraphics = this.resultOverlay.getComponent(Graphics);
+        if (overlayGraphics) {
+            overlayGraphics.clear();
+            overlayGraphics.fillColor = COLOR_RESULT_BG;
+            overlayGraphics.rect(-360, -640, 720, 1280);
+            overlayGraphics.fill();
+        }
+
+        this.resultPanel.setPosition(0, 100, 0);
+        const panelTransform = this.resultPanel.getComponent(UITransform);
+        if (panelTransform) panelTransform.setContentSize(560, 450);
+        const panelGraphics = this.resultPanel.getComponent(Graphics);
+        if (panelGraphics && panelTransform) {
+            panelGraphics.clear();
+            this.roundRect(panelGraphics, -280, -225, 560, 450, 30);
+            panelGraphics.fillColor = COLOR_RESULT_CARD;
+            panelGraphics.fill();
+            panelGraphics.lineWidth = 5;
+            panelGraphics.strokeColor = COLOR_RESULT_YELLOW;
+            panelGraphics.roundRect(-280, -225, 560, 450, 30);
+            panelGraphics.stroke();
+        }
+
+        this.resultTitle.node.setPosition(0, 340, 0);
+        const titleTransform = this.resultTitle.node.getComponent(UITransform);
+        if (titleTransform) titleTransform.setContentSize(640, 100);
+        this.resultTitle.fontSize = 72;
+        this.resultTitle.lineHeight = 84;
+        this.resultTitle.color = COLOR_RESULT_YELLOW;
+        this.resultTitle.isBold = true;
+        this.resultTitle.overflow = Label.Overflow.SHRINK;
+
+        this.resultSubtitle.node.active = false;
+        this.createResultStatLabels();
+        // 操作按钮显示在成绩卡下方，移到全屏结果层，避免超出卡片父节点后发生裁切或错位。
+        this.resultRestartButton.removeFromParent();
+        this.resultOverlay.addChild(this.resultRestartButton);
+        this.styleResultButton(this.resultRestartButton, '再来一局', COLOR_RESULT_BUTTON_DARK, COLOR_RESULT_YELLOW);
+        this.resultRestartButton.setPosition(0, -462, 0);
+    }
+
+    private createResultStatLabels(): void {
+        const scoreCaption = this.createResultLabel(
+            '本局最终得分',
+            28,
+            COLOR_RESULT_MUTED,
+            new Vec3(0, 145, 0),
+            'ResultScoreCaption',
+        );
+        scoreCaption.isBold = false;
+
+        this.resultScoreLabel = this.createResultLabel(
+            '0',
+            72,
+            COLOR_TEXT_LIGHT,
+            new Vec3(0, 72, 0),
+            'ResultScoreValue',
+        );
+        this.resultScoreLabel.isBold = true;
+
+        const divider = new Node('ResultDivider');
+        divider.layer = Layers.Enum.UI_2D;
+        divider.setPosition(0, 5, 0);
+        this.resultPanel.addChild(divider);
+        const dividerTransform = divider.addComponent(UITransform);
+        dividerTransform.setContentSize(400, 2);
+        const dividerGraphics = divider.addComponent(Graphics);
+        dividerGraphics.fillColor = new Color(112, 91, 57);
+        dividerGraphics.rect(-200, -1, 400, 2);
+        dividerGraphics.fill();
+
+        const coinsCaption = this.createResultLabel(
+            '结算获得金币',
+            28,
+            COLOR_RESULT_MUTED,
+            new Vec3(0, -72, 0),
+            'ResultCoinsCaption',
+        );
+        coinsCaption.isBold = false;
+
+        this.resultCoinsLabel = this.createResultLabel(
+            '+ 0',
+            64,
+            COLOR_RESULT_YELLOW,
+            new Vec3(0, -145, 0),
+            'ResultCoinsValue',
+        );
+        this.resultCoinsLabel.isBold = true;
+
+        this.resultCoinBuffLabel = this.createResultLabel(
+            '',
+            22,
+            COLOR_RESULT_YELLOW,
+            new Vec3(0, -195, 0),
+            'ResultCoinBuffValue',
+        );
+        this.resultCoinBuffLabel.isBold = true;
+        this.resultCoinBuffLabel.node.active = false;
+    }
+
+    private createResultLabel(
+        text: string,
+        fontSize: number,
+        color: Color,
+        pos: Vec3,
+        name: string,
+    ): Label {
+        const node = new Node(name);
+        node.layer = Layers.Enum.UI_2D;
+        node.setPosition(pos);
+        this.resultPanel.addChild(node);
+        const transform = node.addComponent(UITransform);
+        transform.setContentSize(500, Math.max(40, fontSize * 1.3));
+        const label = node.addComponent(Label);
+        label.string = text;
+        label.fontSize = fontSize;
+        label.lineHeight = Math.round(fontSize * 1.2);
+        label.color = color;
+        label.horizontalAlign = Label.HorizontalAlign.CENTER;
+        label.verticalAlign = Label.VerticalAlign.CENTER;
+        label.overflow = Label.Overflow.SHRINK;
+        return label;
+    }
+
+    private updateResultStatLabels(): void {
+        if (this.resultScoreLabel) this.resultScoreLabel.string = this.formatResultNumber(this.board?.score || 0);
+        if (this.resultCoinsLabel) this.resultCoinsLabel.string = `+ ${this.formatResultNumber(this.coinsEarnedThisGame)}`;
+        if (this.resultCoinBuffLabel) {
+            const bonus = this.formatResultNumber(this.coinBonusEarnedThisGame);
+            const rate = this.coinBonusRateThisGame > 0
+                ? `（+${Math.round(this.coinBonusRateThisGame * 100)}%）`
+                : '';
+            this.resultCoinBuffLabel.string = this.coinBonusRateThisGame > 0
+                ? `称号加成 +${bonus} 金币${rate}`
+                : '';
+            this.resultCoinBuffLabel.node.active = this.coinBonusRateThisGame > 0;
+        }
+    }
+
+    private formatResultNumber(value: number): string {
+        return Math.max(0, Math.floor(value)).toLocaleString('en-US');
+    }
+
+    private styleResultButton(button: Node, text: string, fillColor: Color, borderColor: Color): void {
+        const transform = button.getComponent(UITransform);
+        if (!transform) return;
+        transform.setContentSize(400, 66);
+
+        // Label 派生节点不能与 Graphics 共存，按钮背景绘制到独立子节点。
+        let background = button.getChildByName('__PanelBackground');
+        if (!background) {
+            background = new Node('__PanelBackground');
+            background.layer = button.layer;
+            background.setPosition(0, 0, -1);
+            button.addChild(background);
+        }
+        const backgroundTransform = background.getComponent(UITransform) || background.addComponent(UITransform);
+        backgroundTransform.setContentSize(transform.width, transform.height);
+        const graphics = background.getComponent(Graphics) || background.addComponent(Graphics);
+        graphics.clear();
+        this.roundRect(graphics, -200, -33, 400, 66, 33);
+        graphics.fillColor = fillColor;
+        graphics.fill();
+        graphics.lineWidth = 4;
+        graphics.strokeColor = borderColor;
+        graphics.roundRect(-200, -33, 400, 66, 33);
+        graphics.stroke();
+        button.getComponent(BlockInputEvents) || button.addComponent(BlockInputEvents);
+
+        const label = button.getChildByName('Label')?.getComponent(Label) || button.getComponent(Label);
+        if (label) {
+            label.string = text;
+            label.fontSize = 28;
+            label.lineHeight = 36;
+            label.color = COLOR_TEXT_LIGHT;
+            label.isBold = true;
+            label.horizontalAlign = Label.HorizontalAlign.CENTER;
+            label.verticalAlign = Label.VerticalAlign.CENTER;
+            const labelTransform = label.node.getComponent(UITransform) || label.node.addComponent(UITransform);
+            labelTransform.setContentSize(380, 58);
+        }
+    }
+
+    private layoutResultButtons(): void {
+        const buttons: Node[] = [];
+        if (this.reviveButtonNode?.active) buttons.push(this.reviveButtonNode);
+        if (this.doubleCoinButtonNode?.active) buttons.push(this.doubleCoinButtonNode);
+        buttons.push(this.resultRestartButton);
+
+        const startY = -210;
+        buttons.forEach((button, index) => {
+            button.setPosition(0, startY - index * 84, 0);
         });
     }
 
@@ -434,7 +643,11 @@ export class GameManager extends Component {
             btn.on(Node.EventType.TOUCH_END, () => {
                 if (!this.gameStarted || this.isAnimating) return;
                 if (this.board && this.board.undo()) {
-                    this.showToast('时间倒流！');
+                    if (this.hasEquippedBuff(BuffType.UNDO_COUNT)) {
+                        this.showTitleBuffTip(BuffType.UNDO_COUNT, '时间倒流！');
+                    } else {
+                        this.showToast('时间倒流！');
+                    }
                     this.syncBoardUI();
                     this.updateScore();
                     this.updateEnergy(this.board.energy, this.board.maxEnergy);
@@ -1313,7 +1526,8 @@ export class GameManager extends Component {
         const toast = new Node('Toast');
         toast.layer = Layers.Enum.UI_2D;
         toast.setPosition(0, 0, 0);
-        (this.titleOverlay || this.node).addChild(toast);
+        const toastParent = this.titleOverlay?.active ? this.titleOverlay : this.node;
+        toastParent.addChild(toast);
         const bg = toast.addComponent(Graphics);
         bg.fillColor = new Color(0, 0, 0, 200);
         bg.roundRect(-180, -30, 360, 60, 12);
@@ -1535,9 +1749,18 @@ export class GameManager extends Component {
         this.moveVersion++;
         this.isAnimating = false;
         this.coinsEarnedThisGame = 0;
+        this.coinBonusEarnedThisGame = 0;
+        this.coinBonusRateThisGame = Math.max(0, this.getEquippedCoinMultiplier() - 1);
         this.hasRevivedThisGame = false;
         this.board = new BoardLogic(4, this.difficulty, this.getEquippedBuffs()); // 构造函数 reset() 已生成 2 个方块
         this.gameStarted = true;
+        if (this.board.initialBoostTriggered) {
+            this.showTitleBuffTip(BuffType.INITIAL_BOOST, '开局升格生效：两个方块提升至 16');
+        }
+        if (this.hasEquippedBuff(BuffType.MIN_SPAWN_VALUE)) {
+            const minValue = this.getEquippedBuffValue(BuffType.MIN_SPAWN_VALUE);
+            this.showTitleBuffTip(BuffType.MIN_SPAWN_VALUE, `新方块保底为 ${Math.round(minValue)}`);
+        }
         this.updateTitleStatusLabel();
         this.clearTiles();
         // 渲染棋盘上所有已有方块（避免重复 spawn）
@@ -1587,6 +1810,68 @@ export class GameManager extends Component {
             }
         }
         return buffs;
+    }
+
+    private getEquippedTitleEffects(): { type: BuffType; value: number }[] {
+        const title = TitleManager.instance.getEquippedTitle();
+        if (!title) return [];
+        return [{ type: title.buffType, value: title.buffValue }, ...(title.effects || [])];
+    }
+
+    private hasEquippedBuff(type: BuffType): boolean {
+        return this.getEquippedTitleEffects().some((effect) => effect.type === type && effect.value > 0);
+    }
+
+    private getEquippedBuffValue(type: BuffType): number {
+        return this.getEquippedTitleEffects()
+            .find((effect) => effect.type === type)?.value || 0;
+    }
+
+    private showTitleBuffTip(type: BuffType, detail: string): void {
+        const title = TitleManager.instance.getEquippedTitle();
+        if (!title || !this.hasEquippedBuff(type)) return;
+        this.showToast(`称号【${title.name}】${detail}`);
+    }
+
+    /** 汇总本次移动实际触发的称号 Buff，避免同一步多个提示互相覆盖。 */
+    private showTriggeredTitleBuffTips(
+        result: MoveResult,
+        spawnedPos: { row: number; col: number } | null,
+    ): void {
+        const title = TitleManager.instance.getEquippedTitle();
+        if (!title) return;
+
+        const tips: string[] = [];
+        const addEffectTip = (type: BuffType, suffix = ''): void => {
+            if (!this.hasEquippedBuff(type)) return;
+            const value = this.getEquippedBuffValue(type);
+            const text = formatBuffText(type, value);
+            if (text) tips.push(`${text}${suffix}`);
+        };
+
+        if (result.combo > 0) {
+            addEffectTip(BuffType.SCORE_BONUS);
+            addEffectTip(BuffType.COMBO_SCORE_MULT);
+        }
+
+        const bombTriggered = result.moves.some((move) => move.bombTriggered);
+        if (bombTriggered) {
+            addEffectTip(BuffType.BOMB_RANGE);
+            addEffectTip(BuffType.BOMB_SCORE_MULT);
+        }
+        if (result.bombNoDestroyTriggered) {
+            addEffectTip(BuffType.BOMB_NO_DESTROY);
+        }
+        if (this.board.lastBombProbTriggered) {
+            addEffectTip(BuffType.BOMB_PROB, '（本次命中）');
+        }
+        if (this.board.lastSpawn8Triggered && spawnedPos) {
+            addEffectTip(BuffType.SPAWN_8_PROB, '（本次命中）');
+        }
+
+        if (tips.length > 0) {
+            this.showToast(`称号【${title.name}】生效：${tips.join('；')}`, 2200);
+        }
     }
 
     /** 获取当前装备称号的金币加成倍率（COIN_BONUS），无称号为 1.0 */
@@ -1661,6 +1946,7 @@ export class GameManager extends Component {
 
                 const pos = this.board.spawnTile();
                 this.syncBoardUI();
+                this.showTriggeredTitleBuffTips(result, pos);
                 
                 let extraCoins = 0;
                 if (result.comboGoldBonus) {
@@ -1694,7 +1980,7 @@ export class GameManager extends Component {
 
                 if (this.board.isGameOver()) {
                     if (this.board.tryGameOverPrevent()) {
-                        this.showToast('因果掌控者：时光倒流清杂！');
+                        this.showTitleBuffTip(BuffType.GAME_OVER_PREVENT, '时光倒流清杂！');
                         this.syncBoardUI();
                         this.updateScore();
                     } else {
@@ -2149,6 +2435,7 @@ export class GameManager extends Component {
             const bonusCoins = Math.floor(gainedCoins * (multiplier - 1));
             if (bonusCoins > 0) {
                 SkinManager.instance.addCoins(bonusCoins);
+                this.coinBonusEarnedThisGame += bonusCoins;
             }
             this.coinsEarnedThisGame += gainedCoins + bonusCoins;
             this.lastScore = this.board.score;
@@ -2441,8 +2728,9 @@ export class GameManager extends Component {
     private showOverlay(title: string, subtitle: string, isWin: boolean): void {
         if (this.resultOverlay.active) return;
         this.closeOtherOverlays(this.resultOverlay);
-        this.resultTitle.string = title;
+        this.resultTitle.string = isWin ? '挑战完成' : '挑战结束';
         this.resultSubtitle.string = `${subtitle}\n本局获得: 🪙 ${this.coinsEarnedThisGame}`;
+        this.updateResultStatLabels();
         
         this.buildResultAdButtons(!isWin && !this.hasRevivedThisGame);
 
@@ -2455,17 +2743,13 @@ export class GameManager extends Component {
     }
 
     private buildResultAdButtons(showRevive: boolean): void {
-        // 重开按钮挪到底部
-        this.resultRestartButton.setPosition(0, -110, 0);
-
         // 初始化复活按钮
         if (!this.reviveButtonNode) {
             this.reviveButtonNode = new Node('ReviveButton');
             this.reviveButtonNode.layer = Layers.Enum.UI_2D;
-            this.resultPanel.addChild(this.reviveButtonNode);
+            this.resultOverlay.addChild(this.reviveButtonNode);
             const trans = this.reviveButtonNode.addComponent(UITransform);
             trans.setContentSize(200, 56);
-            this.drawPanel(this.reviveButtonNode, new Color(240, 100, 80), 10);
             this.makeLabel('🎬 观看广告复活', 20, COLOR_TEXT_LIGHT, this.reviveButtonNode, Vec3.ZERO);
             
             this.reviveButtonNode.on(Node.EventType.TOUCH_END, async () => {
@@ -2496,10 +2780,9 @@ export class GameManager extends Component {
         if (!this.doubleCoinButtonNode) {
             this.doubleCoinButtonNode = new Node('DoubleCoinButton');
             this.doubleCoinButtonNode.layer = Layers.Enum.UI_2D;
-            this.resultPanel.addChild(this.doubleCoinButtonNode);
+            this.resultOverlay.addChild(this.doubleCoinButtonNode);
             const trans = this.doubleCoinButtonNode.addComponent(UITransform);
             trans.setContentSize(200, 56);
-            this.drawPanel(this.doubleCoinButtonNode, new Color(230, 150, 40), 10);
             this.makeLabel('🎬 收益 x3', 20, COLOR_TEXT_LIGHT, this.doubleCoinButtonNode, Vec3.ZERO);
             
             this.doubleCoinButtonNode.on(Node.EventType.TOUCH_END, async () => {
@@ -2509,6 +2792,8 @@ export class GameManager extends Component {
                         SkinManager.instance.addCoins(this.coinsEarnedThisGame * 2);
                         this.doubleCoinButtonNode!.active = false; // 隐藏防多次点击
                         this.resultSubtitle.string = this.resultSubtitle.string + '\n(已翻倍)';
+                        this.coinsEarnedThisGame *= 3;
+                        this.updateResultStatLabels();
                         this.updateCoinsLabel();
                     } else {
                         this.showRewardedAdFailureToast();
@@ -2520,17 +2805,11 @@ export class GameManager extends Component {
         // 控制显示
         this.reviveButtonNode.active = showRevive;
         this.doubleCoinButtonNode.active = this.coinsEarnedThisGame > 0;
-        
-        // 排列位置
-        let startY = 30;
-        if (this.reviveButtonNode.active) {
-            this.reviveButtonNode.setPosition(0, startY, 0);
-            startY -= 70;
-        }
-        if (this.doubleCoinButtonNode.active) {
-            this.doubleCoinButtonNode.setPosition(0, startY, 0);
-            startY -= 70;
-        }
+
+        this.styleResultButton(this.reviveButtonNode, '▶ 观看广告复活', COLOR_RESULT_BUTTON_PINK, COLOR_RESULT_BUTTON_PINK);
+        this.styleResultButton(this.doubleCoinButtonNode, '▶ 收益 x3', COLOR_RESULT_BUTTON_PINK, COLOR_RESULT_BUTTON_PINK);
+        this.styleResultButton(this.resultRestartButton, '再来一局', COLOR_RESULT_BUTTON_DARK, new Color(105, 105, 105));
+        this.layoutResultButtons();
     }
 
     private closeOverlay(): void {

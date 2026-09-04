@@ -191,6 +191,8 @@ export interface MoveResult {
     gameOverPrevented?: boolean;
     /** 本步是否暂停生成新方块（绝对零度） */
     pausedSpawn?: boolean;
+    /** 本步炸弹是否触发了不摧毁方块效果（幸存者偏差） */
+    bombNoDestroyTriggered?: boolean;
     /** 奇数位同化（熵寂主宰），无则不返回 */
     absoluteDomain?: AbsoluteDomainEvent;
     /** 本次移动后棋盘仍可继续的剩余暂停次数（绝对零度），便于 UI 展示 */
@@ -213,6 +215,8 @@ export class BoardLogic {
     public readonly size: number;
     public lastSpawnPaused: boolean = false;
     public lastAbsoluteDomain: boolean = false;
+    public lastBombProbTriggered: boolean = false;
+    public lastSpawn8Triggered: boolean = false;
     public initialBoostTriggered: boolean = false;
     public readonly difficulty: Difficulty;
     public readonly maxEnergy = MAX_ENERGY;
@@ -329,6 +333,7 @@ export class BoardLogic {
         this.score = 0;
         this.energy = 0;
         this.bombNextSpawn = false;
+        this.initialBoostTriggered = false;
         this.undoLeft = this.buffs.undoCount;
         this.pauseSpawnLeft = this.buffs.pauseSpawnUses;
         this.absoluteDomainLeft = this.buffs.absoluteDomainUses;
@@ -354,6 +359,7 @@ export class BoardLogic {
                     }
                 }
             }
+            this.initialBoostTriggered = upgraded > 0;
         }
     }
 
@@ -482,6 +488,8 @@ export class BoardLogic {
     public spawnTile(allowRandomBomb: boolean = true): Pos | null {
         this.lastSpawnPaused = false;
         this.lastAbsoluteDomain = false;
+        this.lastBombProbTriggered = false;
+        this.lastSpawn8Triggered = false;
         
         // PAUSE_SPAWN (绝对零度)
         if (this.pauseSpawnLeft > 0 && this.emptyCells().length < 3) {
@@ -507,6 +515,7 @@ export class BoardLogic {
         // 炸弹来源二：称号 BOMB_PROB 独立随机路径（默认概率 0，不改变无称号基线）
         if (!isBomb && allowRandomBomb && this.buffs.bombProb > 0 && Math.random() < this.buffs.bombProb) {
             isBomb = true;
+            this.lastBombProbTriggered = true;
         }
 
         // 数值保底（MIN_SPAWN_VALUE）：剔除低于保底值的权重项，并重新归一化
@@ -545,6 +554,7 @@ export class BoardLogic {
         // 额外概率生成 8（SPAWN_8_PROB，创世主脑）：独立于保底路径，避免与 MIN_SPAWN_VALUE 耦合
         if (this.buffs.spawn8Prob > 0 && Math.random() < this.buffs.spawn8Prob) {
             spawnValue = 8;
+            this.lastSpawn8Triggered = true;
         }
         // 兜底：命中 8 不得低于保底值（若未来保底值 > 8，则该次保持保底值）
         if (minValue > 0 && spawnValue < minValue) {
@@ -619,6 +629,7 @@ export class BoardLogic {
         const explosionsInfo = this.resolveExplosions(realMoves);
         const explosions = explosionsInfo.explosions;
         let chainTriggered = explosionsInfo.chainTriggered;
+        const bombNoDestroyTriggered = explosionsInfo.bombNoDestroyTriggered;
 
         let comboGoldBonus = 0;
         if (this.buffs.comboGoldBonus > 0 && combo >= 3) {
@@ -710,6 +721,7 @@ export class BoardLogic {
             gravityMerge,
             chainTriggered,
             smallClearCount,
+            bombNoDestroyTriggered,
         };
     }
 
@@ -849,7 +861,11 @@ export class BoardLogic {
         }
     }
 
-    private resolveExplosions(moves: TileMove[]): { explosions: ExplosionEvent[], chainTriggered: boolean } {
+    private resolveExplosions(moves: TileMove[]): {
+        explosions: ExplosionEvent[];
+        chainTriggered: boolean;
+        bombNoDestroyTriggered: boolean;
+    } {
         const explosions: ExplosionEvent[] = [];
         const destroyedIds = new Set<number>();
         const radius = 1 + this.buffs.bombRangeExtra;
@@ -858,12 +874,14 @@ export class BoardLogic {
             : blastOffsets(Math.max(1, Math.floor(radius)));
         
         let chainTriggered = false;
+        let bombNoDestroyTriggered = false;
         const chainCenters: Pos[] = [];
 
         for (const move of moves) {
             if (!move.merged || !move.bombTriggered) continue;
 
             const noDestroy = this.buffs.bombNoDestroyProb > 0 && Math.random() < this.buffs.bombNoDestroyProb;
+            if (noDestroy) bombNoDestroyTriggered = true;
 
             const targetPositions: Pos[] = [];
             const targetIds: number[] = [];
@@ -940,6 +958,6 @@ export class BoardLogic {
             }
         }
 
-        return { explosions, chainTriggered };
+        return { explosions, chainTriggered, bombNoDestroyTriggered };
     }
 }
