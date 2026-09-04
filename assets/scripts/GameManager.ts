@@ -586,9 +586,11 @@ export class GameManager extends Component {
             // ==================== 中间信息区 ====================
             const nameLabel = this.makeLabel(skin.name, 24, COLOR_TEXT_DARK, cardNode, new Vec3(-140, 35, 0));
             nameLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
+            this.clampLabelToCard(nameLabel, 430, -140);
 
             const descLabel = this.makeLabel(skin.description, 15, new Color(130, 120, 110), cardNode, new Vec3(-140, 5, 0));
             descLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
+            this.clampLabelToCard(descLabel, 430, -140);
 
             // 属性 Color 样例预览 (3个 24x24 小圆点)
             const sampleValues = [2, 8, 64];
