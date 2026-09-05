@@ -15,26 +15,21 @@ import {
     view, ResolutionPolicy, Tween, BlockInputEvents, Camera,
 } from 'cc';
 import {
-    BoardLogic, Difficulty, DIFFICULTY_CONFIGS, Direction, ExplosionEvent,
-    MoveResult, TileData, TileMove, BoardBuffs,
+    BoardLogic, Difficulty, DIFFICULTY_CONFIGS, Direction, MoveResult, BoardBuffs,
 } from './BoardLogic';
-import { SkinManager, SKIN_CONFIGS, SkinConfig } from './SkinManager';
+import { SkinManager } from './SkinManager';
 import { AdManager } from './AdManager';
-import { TitleManager, BuffType, TitleConfig, formatBuffText } from './TitleManager';
+import { TitleManager, BuffType } from './TitleManager';
+import { DifficultyViewController } from './DifficultyViewController';
+import { ResultViewController } from './ResultViewController';
+import { ShopViewController } from './ShopViewController';
+import { TitleViewController } from './TitleViewController';
+import { BoardViewController } from './BoardViewController';
+import { EconomyController } from './EconomyController';
+import { TitleBuffService } from './TitleBuffService';
+import { BuffRecordViewController } from './BuffRecordViewController';
 
 const { ccclass, property } = _decorator;
-
-/** 单个方块的渲染节点与数据 */
-interface TileView {
-    node: Node;
-    label: Label;
-    bombLabel: Label;
-    id: number;
-    value: number;
-    isBomb: boolean;
-    row: number;
-    col: number;
-}
 
 /** 能量条持续粒子流中的单个火花粒子 */
 interface EnergyParticle {
@@ -73,17 +68,6 @@ const COLOR_TEXT_LIGHT = new Color(249, 246, 242);
 const COLOR_MASK = new Color(0, 0, 0, 160);
 const COLOR_ENERGY_BG = new Color(120, 99, 83);
 const COLOR_TITLE_STATUS_BG = new Color(126, 76, 176);
-const COLOR_RESULT_BG = new Color(24, 43, 67);
-const COLOR_RESULT_CARD = new Color(48, 69, 88);
-const COLOR_RESULT_YELLOW = new Color(255, 214, 0);
-const COLOR_RESULT_MUTED = new Color(188, 194, 201);
-const COLOR_RESULT_BUTTON_PINK = new Color(255, 48, 104);
-const COLOR_RESULT_BUTTON_DARK = new Color(48, 48, 48);
-
-// 动画时长（秒）
-const MOVE_DURATION = 0.1;
-const MERGE_DURATION = 0.08;
-const SPAWN_DURATION = 0.14;
 
 // 棋盘尺寸（设计分辨率 720x1280）
 const CELL_SIZE = 136;
@@ -135,25 +119,17 @@ export class GameManager extends Component {
 
     private coinLabel!: Label;
     private shopButton!: Node;
-    private shopOverlay!: Node;
-    private shopPanel!: Node;
-    private shopCoinsLabel!: Label;
+    private shopView!: ShopViewController;
     private titleButton!: Node;
-    private titleOverlay!: Node;
-    private titlePanel!: Node;
+    private titleView!: TitleViewController;
     private titleStatusNode: Node | null = null;
     private titleStatusLabel: Label | null = null;
     private pageBackgroundNode: Node | null = null;
-    private resultScoreLabel: Label | null = null;
-    private resultCoinsLabel: Label | null = null;
-    private resultCoinBuffLabel: Label | null = null;
-    private lastScore = 0;
-    private coinsEarnedThisGame = 0;
-    private coinBonusEarnedThisGame = 0;
-    private coinBonusRateThisGame = 0;
+    private difficultyView!: DifficultyViewController;
+    private resultView!: ResultViewController;
+    private readonly buffService = new TitleBuffService();
+    private readonly economy = new EconomyController(this.buffService);
     private hasRevivedThisGame = false;
-    private reviveButtonNode: Node | null = null;
-    private doubleCoinButtonNode: Node | null = null;
     private energyShownRatio = 0;       // 当前显示的充能比例（0~1），用于平滑动画
     private energyTween: Tween<{ ratio: number }> | null = null;
     private energyPulseTween: Tween<UIOpacity> | null = null;
@@ -161,9 +137,10 @@ export class GameManager extends Component {
     private energyParticles: EnergyParticle[] = [];
     private undoButton: Node | null = null;
     private undoLabel: Label | null = null;
+    private boardView!: BoardViewController;
+    private buffRecordView!: BuffRecordViewController;
 
     private board!: BoardLogic;
-    private tileMap: Map<number, TileView> = new Map(); // tileId -> 视图
     private isAnimating = false;
     private moveVersion = 0;
     private gameStarted = false;
@@ -175,6 +152,51 @@ export class GameManager extends Component {
         // 构建配置可能来自旧的 Creator 会话，这里再做一次运行时兜底，确保竖屏 UI 不会跑出视口。
         view.setDesignResolutionSize(720, 1280, ResolutionPolicy.SHOW_ALL);
         this.bindSceneUI();
+        this.boardView = new BoardViewController(this.boardRoot);
+        this.buffRecordView = new BuffRecordViewController(this.node);
+        this.buffRecordView.setup();
+        this.difficultyView = new DifficultyViewController({
+            overlay: this.difficultyOverlay,
+            panel: this.difficultyPanel,
+            easyButton: this.easyButton,
+            normalButton: this.normalButton,
+            hardButton: this.hardButton,
+            nightmareButton: this.nightmareButton,
+        }, (difficulty) => this.selectDifficulty(difficulty));
+        this.resultView = new ResultViewController({
+            overlay: this.resultOverlay,
+            panel: this.resultPanel,
+            title: this.resultTitle,
+            subtitle: this.resultSubtitle,
+            restartButton: this.resultRestartButton,
+        }, {
+            onRestart: () => this.restart(),
+            onRevive: () => this.reviveGame(),
+            onDoubleCoin: () => this.doubleCoinGame(),
+        });
+        this.shopView = new ShopViewController(this.node, {
+            onOpen: (overlay) => this.closeOtherOverlays(overlay),
+            onClose: () => {
+                if (!this.hasActiveModalOverlay()) AdManager.instance.hideBanner();
+            },
+            onSkinChanged: () => this.onSkinChanged(),
+            onRewardedAdFailure: () => this.showRewardedAdFailureToast(),
+        });
+        this.titleView = new TitleViewController(this.node, {
+            onOpen: (overlay) => this.closeOtherOverlays(overlay),
+            onClose: () => {
+                if (!this.hasActiveModalOverlay()) AdManager.instance.hideBanner();
+            },
+            onTitleEquipped: () => {
+                if (this.board) {
+                    this.board.updateBuffs(this.getEquippedBuffs());
+                    this.updateUndoButton();
+                }
+                this.updateTitleStatusLabel();
+            },
+            onToast: (message, duration) => this.showToast(message, duration),
+            onRewardedAdFailure: () => this.showRewardedAdFailureToast(),
+        });
         this.setupSceneUI();
         this.loadBestScore();
         this.showDifficultySelection();
@@ -190,11 +212,6 @@ export class GameManager extends Component {
         if (this.shopButton) {
             this.shopButton.on(Node.EventType.TOUCH_END, this.openShop, this);
         }
-        this.easyButton.on(Node.EventType.TOUCH_END, () => this.selectDifficulty('easy'), this);
-        this.normalButton.on(Node.EventType.TOUCH_END, () => this.selectDifficulty('normal'), this);
-        this.hardButton.on(Node.EventType.TOUCH_END, () => this.selectDifficulty('hard'), this);
-        this.nightmareButton.on(Node.EventType.TOUCH_END, () => this.selectDifficulty('nightmare'), this);
-        this.resultRestartButton.on(Node.EventType.TOUCH_END, this.restart, this);
     }
 
     protected onDestroy(): void {
@@ -211,6 +228,7 @@ export class GameManager extends Component {
         // 停止能量条充能动画，防止销毁后继续回调
         if (this.energyTween) { this.energyTween.stop(); this.energyTween = null; }
         if (this.energyPulseTween) { this.energyPulseTween.stop(); this.energyPulseTween = null; }
+        this.buffRecordView?.clear();
         this.moveVersion++;
     }
 
@@ -261,52 +279,19 @@ export class GameManager extends Component {
         this.difficultyLabel.color = COLOR_TEXT_DARK;
         this.difficultyLabel.isBold = true;
         this.drawPanel(this.newGameButton, COLOR_BTN_BG, 10);
-        this.drawPanel(this.easyButton, COLOR_BTN_BG, 10);
-        this.drawPanel(this.normalButton, COLOR_BTN_BG, 10);
-        this.drawPanel(this.hardButton, COLOR_BTN_BG, 10);
-        this.drawPanel(this.nightmareButton, COLOR_BTN_BG, 10);
-        // RestartButton 的场景 Label 挂在按钮自身节点上，drawPanel 会把背景画进子节点并盖住按钮文字
-        // （子节点渲染晚于父组件）。先将文字迁移到子 Label 节点（与难度/满能量等按钮结构一致），再绘制背景。
-        const restartLabelComp = this.resultRestartButton.getComponent(Label);
-        let restartButtonText = '';
-        let restartButtonFontSize = 0;
-        let restartButtonColor: Color | null = null;
-        if (restartLabelComp) {
-            restartButtonText = restartLabelComp.string || '再来一局';
-            restartButtonFontSize = restartLabelComp.fontSize;
-            restartButtonColor = restartLabelComp.color.clone();
-            this.resultRestartButton.removeComponent(restartLabelComp);
-        }
-        this.drawPanel(this.resultRestartButton, COLOR_BTN_BG, 10);
-        if (restartButtonColor) {
-            const restartLabelNode = new Node('Label');
-            restartLabelNode.layer = this.resultRestartButton.layer;
-            restartLabelNode.setPosition(0, 0, 1);
-            this.resultRestartButton.addChild(restartLabelNode);
-            const restartLabel = restartLabelNode.addComponent(Label);
-            restartLabel.string = restartButtonText;
-            restartLabel.fontSize = restartButtonFontSize;
-            restartLabel.lineHeight = Math.round(restartButtonFontSize * 1.3);
-            restartLabel.color = restartButtonColor;
-            restartLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
-            restartLabel.verticalAlign = Label.VerticalAlign.CENTER;
-        }
         this.drawBoardGraphics();
         this.updatePageTheme();
         this.drawEnergyBarBackground();
         this.initEnergyParticleLayer();
-        this.drawPanel(this.difficultyPanel, new Color(250, 248, 239), 14);
-        this.drawPanel(this.resultPanel, new Color(250, 248, 239), 14);
-        this.drawOverlayMask(this.difficultyOverlay);
-        this.drawOverlayMask(this.resultOverlay);
-        this.setupResultOverlayUI();
+        this.difficultyView.setup();
+        this.resultView.setup();
         this.updateEnergy(0, 100);
 
         this.createCoinUI();
         this.createAdEnergyButton();
-        this.buildShopOverlayUI();
+        this.shopView.setup();
         this.createTitleButton();
-        this.buildTitleOverlayUI();
+        this.titleView.setup();
         // 提前预热称号配置加载（标题 UI 构建时即触发，避免进入面板后等待）
         TitleManager.instance.ensureLoadOnce();
         this.createTitleStatusUI();
@@ -315,204 +300,6 @@ export class GameManager extends Component {
         });
     }
 
-    /** 按参考图重排结束页，保留场景已有结果弹窗节点和按钮绑定。 */
-    private setupResultOverlayUI(): void {
-        const overlayGraphics = this.resultOverlay.getComponent(Graphics);
-        if (overlayGraphics) {
-            overlayGraphics.clear();
-            overlayGraphics.fillColor = COLOR_RESULT_BG;
-            overlayGraphics.rect(-360, -640, 720, 1280);
-            overlayGraphics.fill();
-        }
-
-        this.resultPanel.setPosition(0, 100, 0);
-        const panelTransform = this.resultPanel.getComponent(UITransform);
-        if (panelTransform) panelTransform.setContentSize(560, 450);
-        const panelGraphics = this.resultPanel.getComponent(Graphics);
-        if (panelGraphics && panelTransform) {
-            panelGraphics.clear();
-            this.roundRect(panelGraphics, -280, -225, 560, 450, 30);
-            panelGraphics.fillColor = COLOR_RESULT_CARD;
-            panelGraphics.fill();
-            panelGraphics.lineWidth = 5;
-            panelGraphics.strokeColor = COLOR_RESULT_YELLOW;
-            panelGraphics.roundRect(-280, -225, 560, 450, 30);
-            panelGraphics.stroke();
-        }
-
-        this.resultTitle.node.setPosition(0, 340, 0);
-        const titleTransform = this.resultTitle.node.getComponent(UITransform);
-        if (titleTransform) titleTransform.setContentSize(640, 100);
-        this.resultTitle.fontSize = 72;
-        this.resultTitle.lineHeight = 84;
-        this.resultTitle.color = COLOR_RESULT_YELLOW;
-        this.resultTitle.isBold = true;
-        this.resultTitle.overflow = Label.Overflow.SHRINK;
-
-        this.resultSubtitle.node.active = false;
-        this.createResultStatLabels();
-        // 操作按钮显示在成绩卡下方，移到全屏结果层，避免超出卡片父节点后发生裁切或错位。
-        this.resultRestartButton.removeFromParent();
-        this.resultOverlay.addChild(this.resultRestartButton);
-        this.styleResultButton(this.resultRestartButton, '再来一局', COLOR_RESULT_BUTTON_DARK, COLOR_RESULT_YELLOW);
-        this.resultRestartButton.setPosition(0, -462, 0);
-    }
-
-    private createResultStatLabels(): void {
-        const scoreCaption = this.createResultLabel(
-            '本局最终得分',
-            28,
-            COLOR_RESULT_MUTED,
-            new Vec3(0, 145, 0),
-            'ResultScoreCaption',
-        );
-        scoreCaption.isBold = false;
-
-        this.resultScoreLabel = this.createResultLabel(
-            '0',
-            72,
-            COLOR_TEXT_LIGHT,
-            new Vec3(0, 72, 0),
-            'ResultScoreValue',
-        );
-        this.resultScoreLabel.isBold = true;
-
-        const divider = new Node('ResultDivider');
-        divider.layer = Layers.Enum.UI_2D;
-        divider.setPosition(0, 5, 0);
-        this.resultPanel.addChild(divider);
-        const dividerTransform = divider.addComponent(UITransform);
-        dividerTransform.setContentSize(400, 2);
-        const dividerGraphics = divider.addComponent(Graphics);
-        dividerGraphics.fillColor = new Color(112, 91, 57);
-        dividerGraphics.rect(-200, -1, 400, 2);
-        dividerGraphics.fill();
-
-        const coinsCaption = this.createResultLabel(
-            '结算获得金币',
-            28,
-            COLOR_RESULT_MUTED,
-            new Vec3(0, -72, 0),
-            'ResultCoinsCaption',
-        );
-        coinsCaption.isBold = false;
-
-        this.resultCoinsLabel = this.createResultLabel(
-            '+ 0',
-            64,
-            COLOR_RESULT_YELLOW,
-            new Vec3(0, -145, 0),
-            'ResultCoinsValue',
-        );
-        this.resultCoinsLabel.isBold = true;
-
-        this.resultCoinBuffLabel = this.createResultLabel(
-            '',
-            22,
-            COLOR_RESULT_YELLOW,
-            new Vec3(0, -195, 0),
-            'ResultCoinBuffValue',
-        );
-        this.resultCoinBuffLabel.isBold = true;
-        this.resultCoinBuffLabel.node.active = false;
-    }
-
-    private createResultLabel(
-        text: string,
-        fontSize: number,
-        color: Color,
-        pos: Vec3,
-        name: string,
-    ): Label {
-        const node = new Node(name);
-        node.layer = Layers.Enum.UI_2D;
-        node.setPosition(pos);
-        this.resultPanel.addChild(node);
-        const transform = node.addComponent(UITransform);
-        transform.setContentSize(500, Math.max(40, fontSize * 1.3));
-        const label = node.addComponent(Label);
-        label.string = text;
-        label.fontSize = fontSize;
-        label.lineHeight = Math.round(fontSize * 1.2);
-        label.color = color;
-        label.horizontalAlign = Label.HorizontalAlign.CENTER;
-        label.verticalAlign = Label.VerticalAlign.CENTER;
-        label.overflow = Label.Overflow.SHRINK;
-        return label;
-    }
-
-    private updateResultStatLabels(): void {
-        if (this.resultScoreLabel) this.resultScoreLabel.string = this.formatResultNumber(this.board?.score || 0);
-        if (this.resultCoinsLabel) this.resultCoinsLabel.string = `+ ${this.formatResultNumber(this.coinsEarnedThisGame)}`;
-        if (this.resultCoinBuffLabel) {
-            const bonus = this.formatResultNumber(this.coinBonusEarnedThisGame);
-            const rate = this.coinBonusRateThisGame > 0
-                ? `（+${Math.round(this.coinBonusRateThisGame * 100)}%）`
-                : '';
-            this.resultCoinBuffLabel.string = this.coinBonusRateThisGame > 0
-                ? `称号加成 +${bonus} 金币${rate}`
-                : '';
-            this.resultCoinBuffLabel.node.active = this.coinBonusRateThisGame > 0;
-        }
-    }
-
-    private formatResultNumber(value: number): string {
-        return Math.max(0, Math.floor(value)).toLocaleString('en-US');
-    }
-
-    private styleResultButton(button: Node, text: string, fillColor: Color, borderColor: Color): void {
-        const transform = button.getComponent(UITransform);
-        if (!transform) return;
-        transform.setContentSize(400, 66);
-
-        // Label 派生节点不能与 Graphics 共存，按钮背景绘制到独立子节点。
-        let background = button.getChildByName('__PanelBackground');
-        if (!background) {
-            background = new Node('__PanelBackground');
-            background.layer = button.layer;
-            background.setPosition(0, 0, -1);
-            button.addChild(background);
-        }
-        const backgroundTransform = background.getComponent(UITransform) || background.addComponent(UITransform);
-        backgroundTransform.setContentSize(transform.width, transform.height);
-        const graphics = background.getComponent(Graphics) || background.addComponent(Graphics);
-        graphics.clear();
-        this.roundRect(graphics, -200, -33, 400, 66, 33);
-        graphics.fillColor = fillColor;
-        graphics.fill();
-        graphics.lineWidth = 4;
-        graphics.strokeColor = borderColor;
-        graphics.roundRect(-200, -33, 400, 66, 33);
-        graphics.stroke();
-        button.getComponent(BlockInputEvents) || button.addComponent(BlockInputEvents);
-
-        const label = button.getChildByName('Label')?.getComponent(Label) || button.getComponent(Label);
-        if (label) {
-            label.string = text;
-            label.fontSize = 28;
-            label.lineHeight = 36;
-            label.color = COLOR_TEXT_LIGHT;
-            label.isBold = true;
-            label.horizontalAlign = Label.HorizontalAlign.CENTER;
-            label.verticalAlign = Label.VerticalAlign.CENTER;
-            const labelTransform = label.node.getComponent(UITransform) || label.node.addComponent(UITransform);
-            labelTransform.setContentSize(380, 58);
-        }
-    }
-
-    private layoutResultButtons(): void {
-        const buttons: Node[] = [];
-        if (this.reviveButtonNode?.active) buttons.push(this.reviveButtonNode);
-        if (this.doubleCoinButtonNode?.active) buttons.push(this.doubleCoinButtonNode);
-        buttons.push(this.resultRestartButton);
-
-        const startY = -210;
-        buttons.forEach((button, index) => {
-            button.setPosition(0, startY - index * 84, 0);
-        });
-    }
-
-    /** 创建游戏页分数下方的称号生效状态条。 */
     private createTitleStatusUI(): void {
         let statusNode = this.node.getChildByName('TitleStatus');
         if (!statusNode) {
@@ -648,7 +435,7 @@ export class GameManager extends Component {
                     } else {
                         this.showToast('时间倒流！');
                     }
-                    this.syncBoardUI();
+                    this.boardView.sync(this.board);
                     this.updateScore();
                     this.updateEnergy(this.board.energy, this.board.maxEnergy);
                     this.updateUndoButton();
@@ -768,54 +555,7 @@ export class GameManager extends Component {
         }
     }
 
-    private buildShopOverlayUI(): void {
-        if (this.shopOverlay && this.shopOverlay.isValid) return;
-
-        this.shopOverlay = new Node('ShopOverlay');
-        this.shopOverlay.layer = Layers.Enum.UI_2D;
-        this.node.addChild(this.shopOverlay);
-        const transform = this.shopOverlay.addComponent(UITransform);
-        transform.setContentSize(720, 1280);
-        this.shopOverlay.addComponent(UIOpacity);
-        this.drawOverlayMask(this.shopOverlay);
-
-        this.shopPanel = new Node('Panel');
-        this.shopPanel.layer = Layers.Enum.UI_2D;
-        this.shopOverlay.addChild(this.shopPanel);
-        const panelTrans = this.shopPanel.addComponent(UITransform);
-        panelTrans.setContentSize(640, 880);
-        this.drawPanel(this.shopPanel, new Color(250, 248, 239), 16);
-
-        this.makeLabel('格子皮肤商店', 36, COLOR_TEXT_DARK, this.shopPanel, new Vec3(0, 390, 0));
-
-        const coinNode = new Node('ShopCoins');
-        coinNode.layer = Layers.Enum.UI_2D;
-        coinNode.setPosition(0, 335, 0);
-        this.shopPanel.addChild(coinNode);
-        this.shopCoinsLabel = coinNode.addComponent(Label);
-        this.shopCoinsLabel.fontSize = 24;
-        this.shopCoinsLabel.color = new Color(215, 140, 0);
-
-        const closeBtn = new Node('CloseButton');
-        closeBtn.layer = Layers.Enum.UI_2D;
-        closeBtn.setPosition(270, 390, 0);
-        this.shopPanel.addChild(closeBtn);
-        const closeTrans = closeBtn.addComponent(UITransform);
-        closeTrans.setContentSize(46, 46);
-        this.drawPanel(closeBtn, new Color(214, 70, 48), 23);
-        this.makeLabel('✕', 26, COLOR_TEXT_LIGHT, closeBtn, Vec3.ZERO);
-        closeBtn.on(Node.EventType.TOUCH_END, () => {
-            this.shopOverlay.active = false;
-            if (!this.hasActiveModalOverlay()) {
-                AdManager.instance.hideBanner();
-            }
-        }, this);
-
-        this.refreshShopUI();
-        this.shopOverlay.active = false;
-    }
-
-    /** 尝试多种路径格式动态加载资源/图片 SpriteFrame */
+    /** 尝试多种路径格式动态加载资源/图片 SpriteFrame。 */
     private loadSkinSpriteFrame(resName: string, callback: (sf: SpriteFrame | null) => void): void {
         resources.load(`skin/${resName}/spriteFrame`, SpriteFrame, (err, sf) => {
             if (!err && sf) {
@@ -827,10 +567,10 @@ export class GameManager extends Component {
                     callback(sf2);
                     return;
                 }
-                resources.load(`skin/${resName}`, Texture2D, (err3, tex) => {
-                    if (!err3 && tex) {
+                resources.load(`skin/${resName}`, Texture2D, (err3, texture) => {
+                    if (!err3 && texture) {
                         const frame = new SpriteFrame();
-                        frame.texture = tex;
+                        frame.texture = texture;
                         callback(frame);
                         return;
                     }
@@ -840,699 +580,17 @@ export class GameManager extends Component {
         });
     }
 
-    private refreshShopUI(): void {
-        if (!this.shopPanel) return;
-
-        const oldCards = this.shopPanel.children.filter((child) => child.name.startsWith('SkinCard_'));
-        oldCards.forEach((c) => c.destroy());
-
-        this.updateCoinsLabel();
-
-        const skins = SKIN_CONFIGS;
-        const startY = 220;
-        const cardHeight = 140;
-        const gap = 15;
-
-        skins.forEach((skin, index) => {
-            const cardNode = new Node(`SkinCard_${skin.id}`);
-            cardNode.layer = Layers.Enum.UI_2D;
-            cardNode.setPosition(0, startY - index * (cardHeight + gap), 0);
-            this.shopPanel.addChild(cardNode);
-
-            const trans = cardNode.addComponent(UITransform);
-            trans.setContentSize(580, cardHeight);
-
-            const isEquipped = SkinManager.instance.getEquippedSkinId() === skin.id;
-            const isUnlocked = SkinManager.instance.isSkinUnlocked(skin.id);
-
-            // 背景卡片
-            this.drawPanel(cardNode, isEquipped ? new Color(245, 235, 215) : new Color(238, 228, 218), 12);
-
-            // ==================== 左侧皮肤预览区（纯色块主题） ====================
-            const previewNode = new Node('SkinPreview');
-            previewNode.layer = Layers.Enum.UI_2D;
-            previewNode.setPosition(-220, 0, 0);
-            cardNode.addChild(previewNode);
-
-            const pTrans = previewNode.addComponent(UITransform);
-            pTrans.setContentSize(90, 90);
-            this.drawPanel(previewNode, skin.colors[0].bg, 10);
-
-            // 不使用图片皮肤：预览区仅保留纯色块主题，显示皮肤名缩略字
-            this.makeLabel(skin.name.substring(0, 2), 24, skin.colors[0].text, previewNode, Vec3.ZERO);
-
-            // ==================== 中间信息区 ====================
-            const nameLabel = this.makeLabel(skin.name, 24, COLOR_TEXT_DARK, cardNode, new Vec3(-140, 35, 0));
-            nameLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
-            this.clampLabelToCard(nameLabel, 430, -140);
-
-            const descLabel = this.makeLabel(skin.description, 15, new Color(130, 120, 110), cardNode, new Vec3(-140, 5, 0));
-            descLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
-            this.clampLabelToCard(descLabel, 430, -140);
-
-            // 属性 Color 样例预览 (3个 24x24 小圆点)
-            const sampleValues = [2, 8, 64];
-            sampleValues.forEach((val, i) => {
-                const sampleNode = new Node('SampleColor');
-                sampleNode.layer = Layers.Enum.UI_2D;
-                sampleNode.setPosition(-140 + i * 30, -32, 0);
-                cardNode.addChild(sampleNode);
-
-                const sampleTrans = sampleNode.addComponent(UITransform);
-                sampleTrans.setContentSize(24, 24);
-
-                const g = sampleNode.addComponent(Graphics);
-                this.roundRect(g, -12, -12, 24, 24, 4);
-
-                const colorIdx = Math.min(Math.floor(Math.log2(val)) - 1, skin.colors.length - 1);
-                const style = skin.colors[colorIdx >= 0 ? colorIdx : 0];
-                g.fillColor = style.bg;
-                g.fill();
-            });
-
-            // ==================== 右侧操作按钮 ====================
-            const btnNode = new Node('ActionButton');
-            btnNode.layer = Layers.Enum.UI_2D;
-            btnNode.setPosition(200, (skin.price >= 600 && !isUnlocked) ? 20 : 0, 0);
-            cardNode.addChild(btnNode);
-
-            const btnTrans = btnNode.addComponent(UITransform);
-            btnTrans.setContentSize(130, 48);
-
-            let btnBg = COLOR_BTN_BG;
-            let btnText = '';
-
-            if (isEquipped) {
-                btnBg = new Color(120, 180, 90);
-                btnText = '已使用';
-            } else if (isUnlocked) {
-                btnBg = new Color(242, 177, 121);
-                btnText = '使用';
-            } else {
-                const canBuy = SkinManager.instance.getCoins() >= skin.price;
-                btnBg = canBuy ? new Color(246, 124, 95) : new Color(180, 170, 160);
-                btnText = `🪙 ${skin.price}`;
-            }
-
-            this.drawPanel(btnNode, btnBg, 8);
-            this.makeLabel(btnText, 20, COLOR_TEXT_LIGHT, btnNode, Vec3.ZERO);
-
-            if (!isEquipped) {
-                btnNode.on(Node.EventType.TOUCH_END, () => {
-                    if (isUnlocked) {
-                        SkinManager.instance.equipSkin(skin.id);
-                        this.onSkinChanged();
-                    } else {
-                        if (SkinManager.instance.buySkin(skin.id)) {
-                            this.onSkinChanged();
-                        }
-                    }
-                }, this);
-            }
-
-            // ==================== 广告解锁按钮 (史诗皮肤专属) ====================
-            if (!isUnlocked && skin.price >= 600) {
-                const adBtnNode = new Node('AdUnlockButton');
-                adBtnNode.layer = Layers.Enum.UI_2D;
-                adBtnNode.setPosition(200, -35, 0);
-                cardNode.addChild(adBtnNode);
-
-                const adBtnTrans = adBtnNode.addComponent(UITransform);
-                adBtnTrans.setContentSize(130, 40);
-                this.drawPanel(adBtnNode, new Color(100, 150, 240), 8);
-
-                const adProgress = SkinManager.instance.getAdWatchedCount(skin.id);
-                this.makeLabel(`🎬 解锁 (${adProgress}/5)`, 16, COLOR_TEXT_LIGHT, adBtnNode, Vec3.ZERO);
-
-                adBtnNode.on(Node.EventType.TOUCH_END, async () => {
-                    const success = await AdManager.instance.showRewardedVideo('shop_freebie');
-                    if (success) {
-                        const unlocked = SkinManager.instance.watchAdForSkin(skin.id);
-                        if (unlocked) {
-                            SkinManager.instance.equipSkin(skin.id);
-                        }
-                        this.onSkinChanged(); // 刷新商店与界面
-                    } else {
-                        this.showRewardedAdFailureToast();
-                    }
-                }, this);
-            }
-        });
-    }
-
-    private openShop(): void {
-        if (!this.shopOverlay) return;
-        this.closeOtherOverlays(this.shopOverlay);
-        this.refreshShopUI();
-        this.shopOverlay.active = true;
-        AdManager.instance.showBanner();
-        const opacity = this.shopOverlay.getComponent(UIOpacity);
-        if (opacity) {
-            opacity.opacity = 0;
-            tween(opacity).to(0.2, { opacity: 255 }).start();
-        }
-    }
-
-    // ==================== 称号系统 ====================
-
-    private titleTab: 'gacha' | 'inventory' | 'catalog' = 'gacha';
-    /** 图鉴分页（每页 8 个称号） */
-    private catalogPage = 0;
-    private inventoryPage = 0;
-    private titleContentContainer!: Node;
-
-    private buildTitleOverlayUI(): void {
-        if (this.titleOverlay && this.titleOverlay.isValid) return;
-
-        this.titleOverlay = new Node('TitleOverlay');
-        this.titleOverlay.layer = Layers.Enum.UI_2D;
-        this.node.addChild(this.titleOverlay);
-        const transform = this.titleOverlay.addComponent(UITransform);
-        transform.setContentSize(720, 1280);
-        this.titleOverlay.addComponent(UIOpacity);
-        this.drawOverlayMask(this.titleOverlay);
-
-        this.titlePanel = new Node('Panel');
-        this.titlePanel.layer = Layers.Enum.UI_2D;
-        this.titleOverlay.addChild(this.titlePanel);
-        const panelTrans = this.titlePanel.addComponent(UITransform);
-        panelTrans.setContentSize(640, 880);
-        this.drawPanel(this.titlePanel, new Color(250, 248, 239), 16);
-
-        this.makeLabel('称号系统', 36, COLOR_TEXT_DARK, this.titlePanel, new Vec3(0, 390, 0));
-
-        const closeBtn = new Node('CloseButton');
-        closeBtn.layer = Layers.Enum.UI_2D;
-        closeBtn.setPosition(270, 390, 0);
-        this.titlePanel.addChild(closeBtn);
-        const closeTrans = closeBtn.addComponent(UITransform);
-        closeTrans.setContentSize(46, 46);
-        this.drawPanel(closeBtn, new Color(214, 70, 48), 23);
-        this.makeLabel('✕', 26, COLOR_TEXT_LIGHT, closeBtn, Vec3.ZERO);
-        closeBtn.on(Node.EventType.TOUCH_END, () => {
-            this.titleOverlay.active = false;
-            if (!this.hasActiveModalOverlay()) {
-                AdManager.instance.hideBanner();
-            }
-        }, this);
-
-        // 标签页：抽卡 / 背包
-        const tabBar = new Node('TabBar');
-        tabBar.layer = Layers.Enum.UI_2D;
-        tabBar.setPosition(0, 340, 0);
-        this.titlePanel.addChild(tabBar);
-
-        const tabs = ['gacha', 'inventory', 'catalog'] as const;
-        const tabLabels = ['🎴 抽卡', '🎒 背包', '📖 图鉴'];
-        tabs.forEach((tab, i) => {
-            const btn = new Node(`Tab_${tab}`);
-            btn.layer = Layers.Enum.UI_2D;
-            btn.setPosition(-190 + i * 190, 0, 0);
-            tabBar.addChild(btn);
-            const btnTrans = btn.addComponent(UITransform);
-            btnTrans.setContentSize(180, 48);
-            this.drawPanel(btn, new Color(220, 210, 200), 8);
-            this.makeLabel(tabLabels[i], 22, COLOR_TEXT_DARK, btn, Vec3.ZERO);
-            btn.on(Node.EventType.TOUCH_END, () => {
-                this.titleTab = tab;
-                this.refreshTitleUI();
-            }, this);
-        });
-
-        // 内容容器（每次刷新时清空重建）
-        this.titleContentContainer = new Node('ContentContainer');
-        this.titleContentContainer.layer = Layers.Enum.UI_2D;
-        this.titleContentContainer.setPosition(0, -30, 0);
-        this.titlePanel.addChild(this.titleContentContainer);
-
-        this.titleOverlay.active = false;
-    }
-
-    private refreshTitleUI(): void {
-        if (!this.titleContentContainer || !this.titleContentContainer.isValid) return;
-        // 清除旧内容
-        this.titleContentContainer.children.forEach((c) => c.destroy());
-        this.titleContentContainer.removeAllChildren();
-
-        if (this.titleTab === 'gacha') {
-            this.buildGachaTab();
-        } else if (this.titleTab === 'inventory') {
-            this.buildInventoryTab();
-        } else {
-            this.buildCatalogTab();
-        }
-    }
-
-    private buildGachaTab(): void {
-        const container = this.titleContentContainer;
-
-        // 金币显示
-        this.makeLabel(
-            `🪙 ${SkinManager.instance.getCoins()}`,
-            22,
-            new Color(215, 140, 0),
-            container,
-            new Vec3(0, 280, 0),
-        );
-
-        // 广告免费抽剩余次数
-        const freeLeft = TitleManager.instance.getFreeAdLeftToday();
-        const freeHint = this.makeLabel(
-            `📺 免费抽：今日剩余 ${freeLeft} / ${TitleManager.instance.dailyFreeAdLimit} 次`,
-            18,
-            new Color(160, 150, 140),
-            container,
-            new Vec3(0, 240, 0),
-        );
-
-        // 单抽按钮
-        const singleBtn = new Node('SingleGacha');
-        singleBtn.layer = Layers.Enum.UI_2D;
-        singleBtn.setPosition(0, 180, 0);
-        container.addChild(singleBtn);
-        const singleTrans = singleBtn.addComponent(UITransform);
-        singleTrans.setContentSize(200, 56);
-        this.drawPanel(singleBtn, new Color(150, 110, 220), 10);
-        this.makeLabel(`抽 1 次 (${TitleManager.instance.gachaPrice}🪙)`, 20, COLOR_TEXT_LIGHT, singleBtn, Vec3.ZERO);
-        singleBtn.on(Node.EventType.TOUCH_END, () => {
-            if (SkinManager.instance.getCoins() < TitleManager.instance.gachaPrice) {
-                this.showToast('金币不足！');
-                return;
-            }
-            const result = TitleManager.instance.gachaOnce();
-            if (result) {
-                this.showGachaResult([result]);
-            } else {
-                this.showToast('未中奖，下次好运！');
-            }
-            this.refreshTitleUI();
-        }, this);
-
-        // 免费广告抽按钮
-        const freeBtn = new Node('FreeAdGacha');
-        freeBtn.layer = Layers.Enum.UI_2D;
-        freeBtn.setPosition(0, 110, 0);
-        container.addChild(freeBtn);
-        const freeTrans = freeBtn.addComponent(UITransform);
-        freeTrans.setContentSize(200, 56);
-        this.drawPanel(freeBtn, new Color(40, 160, 80), 10);
-        this.makeLabel(freeLeft > 0 ? '🎬 免费广告抽' : '今日已用完', 20, COLOR_TEXT_LIGHT, freeBtn, Vec3.ZERO);
-        freeBtn.on(Node.EventType.TOUCH_END, async () => {
-            if (TitleManager.instance.getFreeAdLeftToday() <= 0) {
-                this.showToast('今日免费次数已用完！');
-                return;
-            }
-            const success = await AdManager.instance.showRewardedVideo('title_free_gacha');
-            if (success) {
-                const result = TitleManager.instance.gachaFreeAd();
-                if (result) {
-                    this.showGachaResult([result]);
-                    this.refreshTitleUI();
-                }
-            } else {
-                this.showRewardedAdFailureToast();
-            }
-        }, this);
-
-        // 十连按钮
-        const tenBtn = new Node('TenGacha');
-        tenBtn.layer = Layers.Enum.UI_2D;
-        tenBtn.setPosition(0, 40, 0);
-        container.addChild(tenBtn);
-        const tenTrans = tenBtn.addComponent(UITransform);
-        tenTrans.setContentSize(200, 56);
-        this.drawPanel(tenBtn, new Color(200, 120, 40), 10);
-        this.makeLabel(`十连 (${TitleManager.instance.gachaPrice * TitleManager.instance.gachaTenCount}🪙)`, 20, COLOR_TEXT_LIGHT, tenBtn, Vec3.ZERO);
-        tenBtn.on(Node.EventType.TOUCH_END, () => {
-            const cost = TitleManager.instance.gachaPrice * TitleManager.instance.gachaTenCount;
-            if (SkinManager.instance.getCoins() < cost) {
-                this.showToast('金币不足！');
-                return;
-            }
-            const results = TitleManager.instance.gachaTen(false);
-            if (results.length > 0) {
-                this.showGachaResult(results);
-            } else {
-                this.showToast('十连全部落空，再接再厉！');
-            }
-            this.refreshTitleUI();
-        }, this);
-
-        // 广告十连半价按钮
-        const adTenBtn = new Node('AdTenGacha');
-        adTenBtn.layer = Layers.Enum.UI_2D;
-        adTenBtn.setPosition(0, -30, 0);
-        container.addChild(adTenBtn);
-        const adTenTrans = adTenBtn.addComponent(UITransform);
-        adTenTrans.setContentSize(200, 48);
-        this.drawPanel(adTenBtn, new Color(60, 140, 60), 8);
-        this.makeLabel('🎬 广告十连半价', 18, COLOR_TEXT_LIGHT, adTenBtn, Vec3.ZERO);
-        adTenBtn.on(Node.EventType.TOUCH_END, async () => {
-            const cost = Math.floor(TitleManager.instance.gachaPrice * TitleManager.instance.gachaTenCount / 2);
-            if (SkinManager.instance.getCoins() < cost) {
-                this.showToast('金币不足！');
-                return;
-            }
-            const success = await AdManager.instance.showRewardedVideo('title_ten_half');
-            if (success) {
-                const results = TitleManager.instance.gachaTen(true);
-                if (results.length > 0) {
-                    this.showGachaResult(results);
-                } else {
-                    this.showToast('十连全部落空，再接再厉！');
-                }
-                this.refreshTitleUI();
-            } else {
-                this.showRewardedAdFailureToast();
-            }
-        }, this);
-
-        // 当前装备提示
-        const equipped = TitleManager.instance.getEquippedTitle();
-        if (equipped) {
-            this.makeLabel(
-                `当前装备：${equipped.name}`,
-                18,
-                new Color(100, 90, 80),
-                container,
-                new Vec3(0, -100, 0),
-            );
-        }
-    }
-
-    private buildInventoryTab(): void {
-        const container = this.titleContentContainer;
-        const items = TitleManager.instance.getInventory();
-        const equippedId = TitleManager.instance.getEquippedTitleId();
-
-        if (items.length === 0) {
-            this.makeLabel('暂无称号，快去抽卡吧！', 22, new Color(150, 140, 130), container, new Vec3(0, 200, 0));
-            return;
-        }
-
-        const pageSize = 6;
-        const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
-        this.inventoryPage = Math.max(0, Math.min(this.inventoryPage, pageCount - 1));
-        const startIdx = this.inventoryPage * pageSize;
-        const pageItems = items.slice(startIdx, startIdx + pageSize);
-
-        this.makeLabel(`拥有称号（共 ${items.length} 种）`, 22, COLOR_TEXT_DARK, container, new Vec3(0, 300, 0));
-
-        const startY = 230;
-        const cardHeight = 85;
-        const gap = 12;
-
-        for (let i = 0; i < pageItems.length; i++) {
-            const { config, count } = pageItems[i];
-            const y = startY - i * (cardHeight + gap);
-            const card = new Node(`TitleCard_${config.id}`);
-            card.layer = Layers.Enum.UI_2D;
-            card.setPosition(0, y, 0);
-            container.addChild(card);
-            const cardTrans = card.addComponent(UITransform);
-            cardTrans.setContentSize(570, cardHeight);
-            const isEquipped = config.id === equippedId;
-            this.drawPanel(card, isEquipped ? new Color(235, 225, 210) : new Color(238, 228, 218), 10);
-
-            const nameText = `${config.name} x${count}`;
-            const nameLabel = this.makeLabel(nameText, 20, COLOR_TEXT_DARK, card, new Vec3(-240, 15, 0));
-            nameLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
-            this.clampLabelToCard(nameLabel, 450, -240);
-
-            const rarityColors: Record<string, Color> = {
-                N: new Color(158, 158, 158),
-                R: new Color(74, 144, 217),
-                SR: new Color(155, 89, 208),
-                SSR: new Color(242, 179, 15),
-                UR: new Color(227, 74, 74),
-            };
-            const rarityColor = rarityColors[config.rarity] || new Color(200, 190, 180);
-            const rarityNode = new Node('RarityTag');
-            rarityNode.layer = Layers.Enum.UI_2D;
-            
-            let nameWidth = 0;
-            for (const ch of nameText) {
-                nameWidth += ch.charCodeAt(0) > 255 ? 20 : 11;
-            }
-            const rarityX = Math.min(-240 + nameWidth + 8 + 30, 120);
-            rarityNode.setPosition(rarityX, 15, 0);
-            card.addChild(rarityNode);
-            const rarityTrans = rarityNode.addComponent(UITransform);
-            rarityTrans.setContentSize(60, 24);
-            this.drawPanel(rarityNode, rarityColor, 6);
-            this.makeLabel(config.rarity, 16, COLOR_TEXT_LIGHT, rarityNode, Vec3.ZERO);
-
-            const buffLabel = this.makeLabel(
-                `✨ ${formatBuffText(config.buffType, config.buffValue)}`,
-                15,
-                new Color(180, 110, 30),
-                card,
-                new Vec3(-240, -22, 0),
-            );
-            buffLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
-            this.clampLabelToCard(buffLabel, 360, -240);
-
-            if (!isEquipped) {
-                const equipBtn = new Node('EquipBtn');
-                equipBtn.layer = Layers.Enum.UI_2D;
-                equipBtn.setPosition(230, 0, 0);
-                card.addChild(equipBtn);
-                const eqTrans = equipBtn.addComponent(UITransform);
-                eqTrans.setContentSize(80, 40);
-                this.drawPanel(equipBtn, new Color(100, 180, 100), 8);
-                this.makeLabel('装备', 18, COLOR_TEXT_LIGHT, equipBtn, Vec3.ZERO);
-                equipBtn.on(Node.EventType.TOUCH_END, () => {
-                    TitleManager.instance.equipTitle(config.id);
-                    if (this.board) {
-                        this.board.updateBuffs(this.getEquippedBuffs());
-                        this.updateUndoButton();
-                    }
-                    this.updateTitleStatusLabel();
-                    this.refreshTitleUI();
-                }, this);
-            } else {
-                const unequipBtn = new Node('UnequipBtn');
-                unequipBtn.layer = Layers.Enum.UI_2D;
-                unequipBtn.setPosition(230, 0, 0);
-                card.addChild(unequipBtn);
-                const ueqTrans = unequipBtn.addComponent(UITransform);
-                ueqTrans.setContentSize(80, 40);
-                this.drawPanel(unequipBtn, new Color(180, 160, 140), 8);
-                this.makeLabel('已装备', 18, COLOR_TEXT_LIGHT, unequipBtn, Vec3.ZERO);
-            }
-
-            if (config.rarity === 'SSR' && TitleManager.instance.canAscend(config.id)) {
-                const ascendBtn = new Node('AscendBtn');
-                ascendBtn.layer = Layers.Enum.UI_2D;
-                ascendBtn.setPosition(130, 0, 0); // moved inside card to avoid overflow
-                card.addChild(ascendBtn);
-                const ascTrans = ascendBtn.addComponent(UITransform);
-                ascTrans.setContentSize(80, 40);
-                this.drawPanel(ascendBtn, new Color(240, 90, 90), 8);
-                this.makeLabel('突破', 18, COLOR_TEXT_LIGHT, ascendBtn, Vec3.ZERO);
-                ascendBtn.on(Node.EventType.TOUCH_END, () => {
-                    const ur = TitleManager.instance.ascend(config.id);
-                    if (ur) {
-                        this.showToast(`🎉 合成成功！获得 ${ur.name}`);
-                        this.refreshTitleUI();
-                    }
-                }, this);
-            }
-        }
-
-        if (pageCount > 1) {
-            const pageBtnY = startY - 6 * (cardHeight + gap) - 20; // 强制按满页计算，固定在底部
-
-            const prevBtn = new Node('InventoryPrev');
-            prevBtn.layer = Layers.Enum.UI_2D;
-            prevBtn.setPosition(-130, pageBtnY, 0);
-            container.addChild(prevBtn);
-            const prevTrans = prevBtn.addComponent(UITransform);
-            prevTrans.setContentSize(110, 40);
-            this.drawPanel(prevBtn, new Color(200, 190, 180), 8);
-            this.makeLabel('◀ 上一页', 18, COLOR_TEXT_DARK, prevBtn, Vec3.ZERO);
-            prevBtn.on(Node.EventType.TOUCH_END, () => {
-                if (this.inventoryPage > 0) {
-                    this.inventoryPage--;
-                    this.refreshTitleUI();
-                }
-            }, this);
-
-            this.makeLabel(
-                `${this.inventoryPage + 1} / ${pageCount}`,
-                18,
-                COLOR_TEXT_DARK,
-                container,
-                new Vec3(0, pageBtnY, 0),
-            );
-
-            const nextBtn = new Node('InventoryNext');
-            nextBtn.layer = Layers.Enum.UI_2D;
-            nextBtn.setPosition(130, pageBtnY, 0);
-            container.addChild(nextBtn);
-            const nextTrans = nextBtn.addComponent(UITransform);
-            nextTrans.setContentSize(110, 40);
-            this.drawPanel(nextBtn, new Color(200, 190, 180), 8);
-            this.makeLabel('下一页 ▶', 18, COLOR_TEXT_DARK, nextBtn, Vec3.ZERO);
-            nextBtn.on(Node.EventType.TOUCH_END, () => {
-                if (this.inventoryPage < pageCount - 1) {
-                    this.inventoryPage++;
-                    this.refreshTitleUI();
-                }
-            }, this);
-        }
-    }
-    private buildCatalogTab(): void {
-        const container = this.titleContentContainer;
-
-        const all = TitleManager.instance.getAllConfigs();
-        // 按稀有度排序：N < R < SR < SSR < UR
-        const rarityRank: Record<string, number> = { N: 0, R: 1, SR: 2, SSR: 3, UR: 4 };
-        all.sort((a, b) => (rarityRank[a.rarity] - rarityRank[b.rarity]) || a.id.localeCompare(b.id));
-
-        const equippedId = TitleManager.instance.getEquippedTitleId();
-        const pageSize = 6;
-        const pageCount = Math.max(1, Math.ceil(all.length / pageSize));
-        this.catalogPage = Math.max(0, Math.min(this.catalogPage, pageCount - 1));
-        const startIdx = this.catalogPage * pageSize;
-        const pageTitles = all.slice(startIdx, startIdx + pageSize);
-
-        const rarityColors: Record<string, Color> = {
-            N: new Color(158, 158, 158),
-            R: new Color(74, 144, 217),
-            SR: new Color(155, 89, 208),
-            SSR: new Color(242, 179, 15),
-            UR: new Color(227, 74, 74),
-        };
-
-        // 标题栏：总览
-        this.makeLabel(`称号图鉴（共 ${all.length} 个）`, 22, COLOR_TEXT_DARK, container, new Vec3(0, 300, 0));
-
-        const startY = 250;
-        const cardHeight = 88;
-        const gap = 10;
-
-        pageTitles.forEach((config, i) => {
-            const y = startY - i * (cardHeight + gap);
-            const card = new Node(`CatalogCard_${config.id}`);
-            card.layer = Layers.Enum.UI_2D;
-            card.setPosition(0, y, 0);
-            container.addChild(card);
-            const cardTrans = card.addComponent(UITransform);
-            cardTrans.setContentSize(570, cardHeight);
-            const isEquipped = config.id === equippedId;
-            const ownedCount = TitleManager.instance.getOwnedCount(config.id);
-            this.drawPanel(card, isEquipped ? new Color(235, 225, 210) : new Color(238, 228, 218), 10);
-
-            // 第一行：名称 + 拥有数/装备标记
-            const nameSuffix = isEquipped ? '（已装备）' : (ownedCount > 0 ? ` x${ownedCount}` : '');
-            const nameLabel = this.makeLabel(`${config.name}${nameSuffix}`, 19, COLOR_TEXT_DARK, card, new Vec3(-240, 26, 0));
-            nameLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
-            this.clampLabelToCard(nameLabel, 450);
-
-            // 稀有度色标
-            const rarityColor = rarityColors[config.rarity] || new Color(200, 190, 180);
-            const rarityNode = new Node('RarityTag');
-            rarityNode.layer = Layers.Enum.UI_2D;
-            rarityNode.setPosition(255, 26, 0);
-            card.addChild(rarityNode);
-            const rarityTrans = rarityNode.addComponent(UITransform);
-            rarityTrans.setContentSize(56, 24);
-            this.drawPanel(rarityNode, rarityColor, 6);
-            this.makeLabel(config.rarity, 16, COLOR_TEXT_LIGHT, rarityNode, Vec3.ZERO);
-
-            // 第二行：Buff 效果
-            const buffLabel = this.makeLabel(
-                `✨ ${formatBuffText(config.buffType, config.buffValue)}`,
-                16,
-                new Color(180, 110, 30),
-                card,
-                new Vec3(-240, -4, 0),
-            );
-            buffLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
-            this.clampLabelToCard(buffLabel, 500);
-
-            // 第三行：描述
-            const descLabel = this.makeLabel(config.desc, 14, new Color(130, 120, 110), card, new Vec3(-240, -32, 0));
-            descLabel.horizontalAlign = Label.HorizontalAlign.LEFT;
-            this.clampLabelToCard(descLabel, 500);
-        });
-
-        // 分页按钮
-        if (pageCount > 1) {
-            const pageBtnY = startY - 6 * (cardHeight + gap) - 20; // 强制按满页计算，固定在底部
-
-            const prevBtn = new Node('CatalogPrev');
-            prevBtn.layer = Layers.Enum.UI_2D;
-            prevBtn.setPosition(-130, pageBtnY, 0);
-            container.addChild(prevBtn);
-            const prevTrans = prevBtn.addComponent(UITransform);
-            prevTrans.setContentSize(110, 40);
-            this.drawPanel(prevBtn, new Color(200, 190, 180), 8);
-            this.makeLabel('◀ 上一页', 18, COLOR_TEXT_DARK, prevBtn, Vec3.ZERO);
-            prevBtn.on(Node.EventType.TOUCH_END, () => {
-                if (this.catalogPage > 0) {
-                    this.catalogPage--;
-                    this.refreshTitleUI();
-                }
-            }, this);
-
-            this.makeLabel(
-                `${this.catalogPage + 1} / ${pageCount}`,
-                18,
-                COLOR_TEXT_DARK,
-                container,
-                new Vec3(0, pageBtnY, 0),
-            );
-
-            const nextBtn = new Node('CatalogNext');
-            nextBtn.layer = Layers.Enum.UI_2D;
-            nextBtn.setPosition(130, pageBtnY, 0);
-            container.addChild(nextBtn);
-            const nextTrans = nextBtn.addComponent(UITransform);
-            nextTrans.setContentSize(110, 40);
-            this.drawPanel(nextBtn, new Color(200, 190, 180), 8);
-            this.makeLabel('下一页 ▶', 18, COLOR_TEXT_DARK, nextBtn, Vec3.ZERO);
-            nextBtn.on(Node.EventType.TOUCH_END, () => {
-                if (this.catalogPage < pageCount - 1) {
-                    this.catalogPage++;
-                    this.refreshTitleUI();
-                }
-            }, this);
-        }
-    }
-
-    /** 展示抽卡结果（Toast 风格） */
-    private showGachaResult(titles: TitleConfig[]): void {
-        // 简单提示：显示第一个结果
-        if (titles.length === 0) return;
-        const top = titles[0];
-        const rarityColors: Record<string, string> = {
-            N: '#9e9e9e',
-            R: '#4a90d9',
-            SR: '#9b59d0',
-            SSR: '#f2b30f',
-            UR: '#e34a4a',
-        };
-        const color = rarityColors[top.rarity] || '#ffffff';
-        const summary = titles.length === 1
-            ? `${top.name}`
-            : `${top.name} 等 ${titles.length} 个称号`;
-        this.showToast(`抽到：${summary}`, 2000);
-    }
-
-    /** 短暂提示（Toast 风格） */
-    private showToast(msg: string, duration: number = 1500): void {
+    /** 短暂提示（Toast 风格），供普通操作和广告流程复用。 */
+    private showToast(message: string, duration = 1500): void {
         const toast = new Node('Toast');
         toast.layer = Layers.Enum.UI_2D;
         toast.setPosition(0, 0, 0);
-        const toastParent = this.titleOverlay?.active ? this.titleOverlay : this.node;
-        toastParent.addChild(toast);
-        const bg = toast.addComponent(Graphics);
-        bg.fillColor = new Color(0, 0, 0, 200);
-        bg.roundRect(-180, -30, 360, 60, 12);
-        bg.fill();
-        this.makeLabel(msg, 22, COLOR_TEXT_LIGHT, toast, Vec3.ZERO);
+        this.node.addChild(toast);
+        const background = toast.addComponent(Graphics);
+        background.fillColor = new Color(0, 0, 0, 200);
+        background.roundRect(-180, -30, 360, 60, 12);
+        background.fill();
+        this.makeLabel(message, 22, COLOR_TEXT_LIGHT, toast, Vec3.ZERO);
         this.scheduleOnce(() => {
             if (toast.isValid) toast.destroy();
         }, duration / 1000);
@@ -1542,30 +600,19 @@ export class GameManager extends Component {
         this.showToast('广告加载失败，未发放奖励');
     }
 
+    private openShop(): void {
+        this.shopView.open();
+    }
+
     private openTitle(): void {
-        if (!this.titleOverlay) return;
-        this.closeOtherOverlays(this.titleOverlay);
-        this.titleOverlay.active = true;
-        AdManager.instance.showBanner();
-        this.refreshTitleUI();
-        // 配置加载完成后若有标签页已经打开，刷新一次保证数据完整
-        TitleManager.instance.whenReady(() => {
-            if (this.titleOverlay && this.titleOverlay.active && this.titleOverlay.isValid) {
-                this.refreshTitleUI();
-            }
-        });
-        const opacity = this.titleOverlay.getComponent(UIOpacity);
-        if (opacity) {
-            opacity.opacity = 0;
-            tween(opacity).to(0.2, { opacity: 255 }).start();
-        }
+        this.titleView.open();
     }
 
     private onSkinChanged(): void {
         this.updatePageTheme();
         this.drawBoardGraphics();
-        this.tileMap.forEach((tv) => this.renderTile(tv));
-        this.refreshShopUI();
+        this.boardView.renderAll();
+        this.shopView.refresh();
     }
 
     /** 将当前皮肤的页面背景色同步到主相机。 */
@@ -1664,7 +711,7 @@ export class GameManager extends Component {
             const cell = cells[i];
             const row = Math.floor(i / 4);
             const col = i % 4;
-            cell.setPosition(this.cellPos(row, col));
+            cell.setPosition(this.boardView.cellPos(row, col));
             const graphics = cell.getComponent(Graphics) || cell.addComponent(Graphics);
             const transform = cell.getComponent(UITransform) || cell.addComponent(UITransform);
             if (!graphics || !transform) continue;
@@ -1724,8 +771,8 @@ export class GameManager extends Component {
     private showDifficultySelection(): void {
         this.runWithInterstitialTransition(() => {
             this.closeOtherOverlays(this.difficultyOverlay);
-            this.difficultyOverlay.active = true;
-            this.resultOverlay.active = false;
+            this.difficultyView.show();
+            this.resultView.hide();
             AdManager.instance.showBanner();
         });
     }
@@ -1739,7 +786,7 @@ export class GameManager extends Component {
     }
 
     private closeDifficultySelection(): void {
-        this.difficultyOverlay.active = false;
+        this.difficultyView.hide();
     }
 
     // ==================== 游戏流程 ====================
@@ -1747,10 +794,10 @@ export class GameManager extends Component {
     private startGame(): void {
         AdManager.instance.hideBanner();
         this.moveVersion++;
+        this.boardView.setCurrentVersion(this.moveVersion);
         this.isAnimating = false;
-        this.coinsEarnedThisGame = 0;
-        this.coinBonusEarnedThisGame = 0;
-        this.coinBonusRateThisGame = Math.max(0, this.getEquippedCoinMultiplier() - 1);
+        this.economy.startGame();
+        this.buffRecordView.clear();
         this.hasRevivedThisGame = false;
         this.board = new BoardLogic(4, this.difficulty, this.getEquippedBuffs()); // 构造函数 reset() 已生成 2 个方块
         this.gameStarted = true;
@@ -1762,13 +809,13 @@ export class GameManager extends Component {
             this.showTitleBuffTip(BuffType.MIN_SPAWN_VALUE, `新方块保底为 ${Math.round(minValue)}`);
         }
         this.updateTitleStatusLabel();
-        this.clearTiles();
+        this.boardView.clear();
         // 渲染棋盘上所有已有方块（避免重复 spawn）
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 4; c++) {
                 const tile = this.board.grid[r][c];
                 if (tile.value !== 0) {
-                    this.addTile(r, c, tile);
+                    this.boardView.addTile(r, c, tile);
                 }
             }
         }
@@ -1776,116 +823,33 @@ export class GameManager extends Component {
         this.updateUndoButton();
     }
 
-    /**
-     * 将当前装备称号的 Buff 映射为 BoardBuffs（不含 COIN_BONUS，后者在金币结算处单独处理）。
-     */
     private getEquippedBuffs(): BoardBuffs {
-        const buffs: BoardBuffs = {};
-        const title = TitleManager.instance.getEquippedTitle();
-        if (!title) return buffs;
-        
-        const allEffects = [{ type: title.buffType, value: title.buffValue }, ...(title.effects || [])];
-        for (const effect of allEffects) {
-            switch (effect.type) {
-                case BuffType.SCORE_BONUS: buffs.scoreMultiplier = 1 + effect.value; break;
-                case BuffType.BOMB_PROB: buffs.bombProb = effect.value; break;
-                case BuffType.BOMB_RANGE: buffs.bombRangeExtra = effect.value; break;
-                case BuffType.BOMB_SCORE_MULT: buffs.bombScoreMultiplier = effect.value; break;
-                case BuffType.BOMB_NO_DESTROY: buffs.bombNoDestroyProb = effect.value; break;
-                case BuffType.COMBO_GOLD_BONUS: buffs.comboGoldBonus = effect.value; break;
-                case BuffType.MERGE_GOLD_DROP: buffs.mergeGoldDropProb = effect.value; break;
-                case BuffType.GRAVITY_MERGE: buffs.gravityMerge = effect.value > 0; break;
-                case BuffType.UNDO_COUNT: buffs.undoCount = effect.value; break;
-                case BuffType.INITIAL_BOOST: buffs.initialBoost = effect.value > 0; break;
-                case BuffType.CHAIN_EXPLOSION: buffs.chainExplosion = effect.value > 0; break;
-                case BuffType.CLEAR_SMALL_TILES: buffs.clearSmallThreshold = effect.value; break;
-                case BuffType.PAUSE_SPAWN: buffs.pauseSpawnUses = effect.value; break;
-                case BuffType.ABSOLUTE_DOMAIN: buffs.absoluteDomainUses = effect.value; break;
-                case BuffType.MIN_SPAWN_VALUE: buffs.minSpawnValue = effect.value; break;
-                case BuffType.SPAWN_8_PROB: buffs.spawn8Prob = effect.value; break;
-                case BuffType.WIN_2048_REWARD: buffs.win2048Reward = effect.value; break;
-                case BuffType.COMBO_SCORE_MULT: buffs.comboScoreMultiplier = effect.value; break;
-                case BuffType.GAME_OVER_PREVENT: buffs.gameOverPreventUses = effect.value; break;
-                default: break;
-            }
-        }
-        return buffs;
-    }
-
-    private getEquippedTitleEffects(): { type: BuffType; value: number }[] {
-        const title = TitleManager.instance.getEquippedTitle();
-        if (!title) return [];
-        return [{ type: title.buffType, value: title.buffValue }, ...(title.effects || [])];
+        return this.buffService.getBoardBuffs();
     }
 
     private hasEquippedBuff(type: BuffType): boolean {
-        return this.getEquippedTitleEffects().some((effect) => effect.type === type && effect.value > 0);
+        return this.buffService.has(type);
     }
 
     private getEquippedBuffValue(type: BuffType): number {
-        return this.getEquippedTitleEffects()
-            .find((effect) => effect.type === type)?.value || 0;
+        return this.buffService.getValue(type);
     }
 
     private showTitleBuffTip(type: BuffType, detail: string): void {
         const title = TitleManager.instance.getEquippedTitle();
-        if (!title || !this.hasEquippedBuff(type)) return;
-        this.showToast(`称号【${title.name}】${detail}`);
+        if (!title || !this.buffService.has(type)) return;
+        this.buffRecordView.show(`称号【${title.name}】${detail}`);
     }
 
-    /** 汇总本次移动实际触发的称号 Buff，避免同一步多个提示互相覆盖。 */
+    /** 将本次移动实际触发的称号 Buff 逐条写入右下角记录。 */
     private showTriggeredTitleBuffTips(
         result: MoveResult,
         spawnedPos: { row: number; col: number } | null,
     ): void {
         const title = TitleManager.instance.getEquippedTitle();
+        const tips = this.buffService.getTriggeredTips(result, this.board, !!spawnedPos);
         if (!title) return;
-
-        const tips: string[] = [];
-        const addEffectTip = (type: BuffType, suffix = ''): void => {
-            if (!this.hasEquippedBuff(type)) return;
-            const value = this.getEquippedBuffValue(type);
-            const text = formatBuffText(type, value);
-            if (text) tips.push(`${text}${suffix}`);
-        };
-
-        if (result.combo > 0) {
-            addEffectTip(BuffType.SCORE_BONUS);
-            addEffectTip(BuffType.COMBO_SCORE_MULT);
-        }
-
-        const bombTriggered = result.moves.some((move) => move.bombTriggered);
-        if (bombTriggered) {
-            addEffectTip(BuffType.BOMB_RANGE);
-            addEffectTip(BuffType.BOMB_SCORE_MULT);
-        }
-        if (result.bombNoDestroyTriggered) {
-            addEffectTip(BuffType.BOMB_NO_DESTROY);
-        }
-        if (this.board.lastBombProbTriggered) {
-            addEffectTip(BuffType.BOMB_PROB, '（本次命中）');
-        }
-        if (this.board.lastSpawn8Triggered && spawnedPos) {
-            addEffectTip(BuffType.SPAWN_8_PROB, '（本次命中）');
-        }
-
-        if (tips.length > 0) {
-            this.showToast(`称号【${title.name}】生效：${tips.join('；')}`, 2200);
-        }
-    }
-
-    /** 获取当前装备称号的金币加成倍率（COIN_BONUS），无称号为 1.0 */
-    private getEquippedCoinMultiplier(): number {
-        const title = TitleManager.instance.getEquippedTitle();
-        if (!title) return 1;
-        const allEffects = [{ type: title.buffType, value: title.buffValue }, ...(title.effects || [])];
-        let mult = 1;
-        for (const effect of allEffects) {
-            if (effect.type === BuffType.COIN_BONUS) {
-                mult += effect.value;
-            }
-        }
-        return mult;
+        tips.forEach((tip) => this.buffRecordView.show(`【${title.name}】${tip}`));
     }
 
     private restart(): void {
@@ -1929,65 +893,55 @@ export class GameManager extends Component {
 
         this.isAnimating = true;
         const moveVersion = this.moveVersion;
+        this.boardView.setCurrentVersion(moveVersion);
         let maxDur = 0;
-
-        for (const m of result.moves) {
-            const dur = this.animateMove(m, moveVersion);
-            if (dur > maxDur) maxDur = dur;
+        for (const move of result.moves) {
+            const duration = this.boardView.animateMove(move, moveVersion);
+            if (duration > maxDur) maxDur = duration;
         }
 
         const total = maxDur + 0.02;
         this.scheduleOnce(() => {
             if (moveVersion !== this.moveVersion) return;
-
-            const explosionDuration = this.animateExplosions(result.explosions, moveVersion);
+            const explosionDuration = this.boardView.animateExplosions(result.explosions, moveVersion);
             this.scheduleOnce(() => {
                 if (moveVersion !== this.moveVersion) return;
-
-                const pos = this.board.spawnTile();
-                this.syncBoardUI();
-                this.showTriggeredTitleBuffTips(result, pos);
-                
+                const position = this.board.spawnTile();
+                this.boardView.sync(this.board);
+                this.showTriggeredTitleBuffTips(result, position);
                 let extraCoins = 0;
                 if (result.comboGoldBonus) {
                     extraCoins += result.comboGoldBonus;
-                    this.showToast('黄金点金手：连击金币 +'+result.comboGoldBonus);
+                    this.buffRecordView.show('黄金点金手：连击金币 +' + result.comboGoldBonus);
                 }
                 if (result.goldDrops) {
                     extraCoins += result.goldDrops;
-                    this.showToast('无尽财阀：合成掉落金币 +'+result.goldDrops);
+                    this.buffRecordView.show('无尽财阀：合成掉落金币 +' + result.goldDrops);
                 }
-                
                 const winReward = this.board.consumeWin2048Reward();
                 if (winReward > 0) {
                     extraCoins += winReward;
-                    this.showToast('创世主脑：达成2048奖励 +'+winReward);
+                    this.buffRecordView.show('创世主脑：达成2048奖励 +' + winReward);
                 }
-
                 if (extraCoins > 0) {
-                    TitleManager.instance.addCoins(extraCoins);
+                    this.economy.addExtraCoins(extraCoins);
                     this.updateCoinsLabel();
                 }
-
-                if (result.chainTriggered) this.showToast('裂变源点：十字爆破！');
-                if (result.smallClearCount && result.smallClearCount > 0) this.showToast(`超新星爆裂：清理 ${result.smallClearCount} 个杂块！`);
-                if (result.gravityMerge) this.showToast('灭世奇点：引力合并！');
-                if (this.board.lastSpawnPaused) this.showToast('绝对零度：停止生成！');
-                if (this.board.lastAbsoluteDomain) this.showToast('熵寂主宰：奇数同化！');
-
+                if (result.chainTriggered) this.buffRecordView.show('裂变源点：十字爆破！');
+                if (result.smallClearCount && result.smallClearCount > 0) this.buffRecordView.show(`超新星爆裂：清理 ${result.smallClearCount} 个杂块！`);
+                if (result.gravityMerge) this.buffRecordView.show('灭世奇点：引力合并！');
+                if (this.board.lastSpawnPaused) this.buffRecordView.show('绝对零度：停止生成！');
+                if (this.board.lastAbsoluteDomain) this.buffRecordView.show('熵寂主宰：奇数同化！');
                 this.updateScore();
-                this.updateUndoButton(); // Ensure Undo UI is updated
-
+                this.updateUndoButton();
                 if (this.board.isGameOver()) {
                     if (this.board.tryGameOverPrevent()) {
                         this.showTitleBuffTip(BuffType.GAME_OVER_PREVENT, '时光倒流清杂！');
-                        this.syncBoardUI();
+                        this.boardView.sync(this.board);
                         this.updateScore();
                     } else {
                         this.scheduleOnce(() => {
-                            if (moveVersion === this.moveVersion) {
-                                this.showOverlay('游戏结束', `得分 ${this.board.score}`, false);
-                            }
+                            if (moveVersion === this.moveVersion) this.showOverlay('游戏结束', `得分 ${this.board.score}`, false);
                         }, 0.3);
                     }
                 }
@@ -1996,452 +950,8 @@ export class GameManager extends Component {
         }, total);
     }
 
-    private animateMove(m: TileMove, moveVersion: number): number {
-        const sourceTiles = m.sourceIds.map((id) => this.tileMap.get(id));
-        const srcTile = sourceTiles[0];
-
-        if (!srcTile) return 0;
-
-        // 先保存所有来源视图，再从映射中移除；合并时第二个来源就是要销毁的节点。
-        const victim = m.merged ? (sourceTiles[1] || null) : null;
-        for (const id of m.sourceIds) this.tileMap.delete(id);
-
-        if (m.merged) {
-            // 合并：来源[1] 飞向目标并缩小消失
-            const targetPos = this.cellPos(m.to.row, m.to.col);
-
-            // 主方块：移动到目标 -> 弹跳放大 + 闪光 -> 回弹
-            tween(srcTile.node)
-                .to(MOVE_DURATION, { position: targetPos.clone() })
-                .call(() => {
-                    if (moveVersion !== this.moveVersion || !srcTile.node.isValid) return;
-                    srcTile.value = m.value;
-                    srcTile.isBomb = m.resultIsBomb;
-                    this.renderTile(srcTile);
-                    // 合并瞬间的粒子爆发
-                    this.spawnMergeParticles(targetPos, this.tileColor(m.value).bg, m.value);
-                    // 分数上浮提示
-                    this.spawnScorePopup(targetPos, m.value);
-                })
-                .to(MERGE_DURATION, { scale: new Vec3(1.3, 1.3, 1) })
-                .to(MERGE_DURATION, { scale: new Vec3(1, 1, 1) })
-                .start();
-
-            if (victim) {
-                tween(victim.node)
-                    .to(MOVE_DURATION, { position: targetPos.clone() })
-                    .to(MERGE_DURATION * 2, { scale: new Vec3(0, 0, 1) })
-                    .call(() => {
-                        if (victim.node.isValid) victim.node.destroy();
-                    })
-                    .start();
-            }
-
-            // 更新主方块位置
-            srcTile.row = m.to.row;
-            srcTile.col = m.to.col;
-            this.tileMap.set(srcTile.id, srcTile);
-            return MOVE_DURATION + MERGE_DURATION * 2;
-        } else {
-            // 普通移动
-            const targetPos = this.cellPos(m.to.row, m.to.col);
-            tween(srcTile.node)
-                .to(MOVE_DURATION, { position: targetPos.clone() })
-                .start();
-            srcTile.row = m.to.row;
-            srcTile.col = m.to.col;
-            this.tileMap.set(srcTile.id, srcTile);
-            return MOVE_DURATION;
-        }
-    }
-
-    // ==================== 方块管理 ====================
-
-    private cellPos(row: number, col: number): Vec3 {
-        const x = (col - 1.5) * (CELL_SIZE + GAP);
-        const y = (1.5 - row) * (CELL_SIZE + GAP);
-        return new Vec3(x, y, 0);
-    }
-
-    /** 添加一个方块到棋盘指定格 */
-    private addTile(row: number, col: number, tile: TileData, animated = false): void {
-        const node = new Node('Tile');
-        node.layer = Layers.Enum.UI_2D;
-        node.setPosition(this.cellPos(row, col));
-        this.boardRoot.addChild(node);
-
-        const g = node.addComponent(Graphics);
-        const cs = CELL_SIZE - 8;
-        this.roundRect(g, -cs / 2, -cs / 2, cs, cs, 8);
-        g.fillColor = tile.isBomb ? this.bombColor().bg : this.tileColor(tile.value).bg;
-        g.fill();
-
-        const label = this.makeLabel('', 44, this.tileColor(tile.value).text, node, Vec3.ZERO);
-        const bombLabel = this.makeLabel('炸弹', 18, COLOR_TEXT_LIGHT, node, new Vec3(0, 42, 0));
-
-        const tv: TileView = {
-            node,
-            label,
-            bombLabel,
-            id: tile.id,
-            value: tile.value,
-            isBomb: !!tile.isBomb,
-            row,
-            col,
-        };
-        this.renderTile(tv);
-        this.tileMap.set(tile.id, tv);
-
-        if (animated) {
-            // 生成弹出动画
-            node.setScale(0, 0, 1);
-            tween(node)
-                .to(SPAWN_DURATION, { scale: new Vec3(1.08, 1.08, 1) })
-                .to(0.06, { scale: new Vec3(1, 1, 1) })
-                .start();
-        }
-    }
-
-    /** 清理旧方块，但保留棋盘背景和 16 个空格子。 */
-    private syncBoardUI(): void {
-        const activeIds = new Set<number>();
-        for (let r = 0; r < 4; r++) {
-            for (let c = 0; c < 4; c++) {
-                const tile = this.board.grid[r][c];
-                if (tile.value !== 0) {
-                    activeIds.add(tile.id);
-                    const tv = this.tileMap.get(tile.id);
-                    if (tv) {
-                        tv.value = tile.value;
-                        tv.isBomb = !!tile.isBomb;
-                        tv.row = r;
-                        tv.col = c;
-                        tv.node.setPosition(this.cellPos(r, c));
-                        this.renderTile(tv);
-                    } else {
-                        this.addTile(r, c, tile);
-                    }
-                }
-            }
-        }
-        for (const [id, tv] of this.tileMap.entries()) {
-            if (!activeIds.has(id)) {
-                if (tv.node.isValid) tv.node.destroy();
-                this.tileMap.delete(id);
-            }
-        }
-    }
-
-    private clearTiles(): void {
-        for (const tile of this.tileMap.values()) {
-            if (tile.node.isValid) tile.node.destroy();
-        }
-        this.tileMap.clear();
-
-        // 重开时同时清理上一局尚未播放完的临时特效，保留棋盘背景和 Cell 节点。
-        for (const child of this.boardRoot.children) {
-            if (child.name === 'Particle' || child.name === 'ExplosionFlash' || child.name === 'ScorePopup') {
-                child.destroy();
-            }
-        }
-    }
-
-    private renderTile(tv: TileView): void {
-        tv.label.string = String(tv.value);
-        const colors = tv.isBomb
-            ? { bg: new Color(214, 70, 48), text: COLOR_TEXT_LIGHT }
-            : this.tileColor(tv.value);
-        tv.bombLabel.node.active = tv.isBomb;
-        // 根据位数调整字号
-        const digits = String(tv.value).length;
-        tv.label.fontSize = digits <= 2 ? 52 : digits === 3 ? 44 : digits === 4 ? 34 : 28;
-        tv.label.color = colors.text;
-        const g = tv.node.getComponent(Graphics)!;
-        g.clear();
-        const cs = CELL_SIZE - 8;
-        this.roundRect(g, -cs / 2, -cs / 2, cs, cs, 8);
-        g.fillColor = colors.bg;
-        g.fill();
-        const transform = tv.node.getComponent(UITransform);
-        if (transform) {
-            transform.setContentSize(cs, cs);
-        }
-        this.updateBombFuseEffect(tv.node, tv.isBomb);
-    }
-
-    /** 更新炸弹引线与火花；炸弹合成后变为普通方块时同步移除特效。 */
-    private updateBombFuseEffect(tileNode: Node, isBomb: boolean): void {
-        const oldEffect = tileNode.getChildByName('BombFuse');
-        if (!isBomb) {
-            if (oldEffect?.isValid) oldEffect.destroy();
-            return;
-        }
-        if (oldEffect?.isValid) return;
-
-        const fuseNode = new Node('BombFuse');
-        fuseNode.layer = tileNode.layer;
-        fuseNode.setPosition(0, 0, 2);
-        tileNode.addChild(fuseNode);
-
-        // 引线从炸弹右上方弯向外侧，使用双层描边增强在不同皮肤上的可见度。
-        const fuse = fuseNode.addComponent(Graphics);
-        fuse.lineWidth = 6;
-        fuse.strokeColor = new Color(74, 43, 31, 255);
-        fuse.moveTo(28, 45);
-        fuse.bezierCurveTo(46, 52, 19, 63, 39, 76);
-        fuse.stroke();
-        fuse.lineWidth = 2;
-        fuse.strokeColor = new Color(244, 180, 68, 255);
-        fuse.moveTo(28, 45);
-        fuse.bezierCurveTo(46, 52, 19, 63, 39, 76);
-        fuse.stroke();
-
-        const sparkNode = new Node('Spark');
-        sparkNode.layer = tileNode.layer;
-        sparkNode.setPosition(39, 76, 1);
-        fuseNode.addChild(sparkNode);
-
-        const sparkCore = sparkNode.addComponent(Graphics);
-        sparkCore.circle(0, 0, 5);
-        sparkCore.fillColor = new Color(255, 238, 145, 255);
-        sparkCore.fill();
-        sparkCore.lineWidth = 2;
-        sparkCore.strokeColor = new Color(255, 140, 38, 255);
-        sparkCore.circle(0, 0, 7);
-        sparkCore.stroke();
-
-        // 多个独立粒子从引线顶端向外喷射，节点销毁时其 Tween 会随父节点一并结束。
-        const sprayTargets = [
-            new Vec3(-18, 14, 0),
-            new Vec3(-10, 23, 0),
-            new Vec3(2, 26, 0),
-            new Vec3(14, 20, 0),
-            new Vec3(21, 9, 0),
-        ];
-        sprayTargets.forEach((target, index) => {
-            const particle = new Node(`SparkParticle${index}`);
-            particle.layer = tileNode.layer;
-            sparkNode.addChild(particle);
-
-            const particleGraphics = particle.addComponent(Graphics);
-            particleGraphics.lineWidth = 2.5;
-            particleGraphics.strokeColor = index % 2 === 0
-                ? new Color(255, 224, 112, 255)
-                : new Color(255, 132, 38, 255);
-            particleGraphics.moveTo(0, 0);
-            particleGraphics.lineTo(-target.x * 0.16, -target.y * 0.16);
-            particleGraphics.stroke();
-            particleGraphics.circle(0, 0, 2.5);
-            particleGraphics.fillColor = new Color(255, 235, 140, 255);
-            particleGraphics.fill();
-
-            const opacity = particle.addComponent(UIOpacity);
-            opacity.opacity = 255;
-            tween(particle)
-                .repeatForever(
-                    tween(particle)
-                        .delay(index * 0.07)
-                        .to(0.28, { position: target, scale: new Vec3(0.45, 0.45, 1) })
-                        .call(() => {
-                            if (particle.isValid) {
-                                particle.setPosition(0, 0, 0);
-                                particle.setScale(1, 1, 1);
-                            }
-                        }),
-                )
-                .start();
-            tween(opacity)
-                .repeatForever(
-                    tween(opacity)
-                        .delay(index * 0.07)
-                        .to(0.28, { opacity: 0 })
-                        .call(() => {
-                            if (opacity.isValid) opacity.opacity = 255;
-                        }),
-                )
-                .start();
-        });
-
-        tween(sparkNode)
-            .repeatForever(
-                tween(sparkNode)
-                    .to(0.16, { scale: new Vec3(1.25, 1.25, 1) })
-                    .to(0.16, { scale: new Vec3(0.85, 0.85, 1) }),
-            )
-            .start();
-    }
-
-    private bombColor(): { bg: Color; text: Color } {
-        return { bg: new Color(214, 70, 48), text: COLOR_TEXT_LIGHT };
-    }
-
-    private tileColor(value: number): { bg: Color; text: Color } {
-        return SkinManager.instance.getTileStyle(value);
-    }
-
-    /**
-     * 合成时在目标位置爆发的彩色粒子特效。
-     * 粒子数量随合成值增大而增多，向外四散并淡出。
-     */
-    private spawnMergeParticles(pos: Vec3, color: Color, value: number): void {
-        const count = Math.min(6 + Math.floor(Math.log2(value)), 16);
-        for (let i = 0; i < count; i++) {
-            const p = new Node('Particle');
-            p.layer = Layers.Enum.UI_2D;
-            p.setPosition(pos.clone());
-            this.boardRoot.addChild(p);
-
-            const g = p.addComponent(Graphics);
-            const radius = 4 + Math.random() * 4;
-            g.circle(0, 0, radius);
-            g.fillColor = color;
-            g.fill();
-
-            const angle = (Math.PI * 2 * i) / count + Math.random() * 0.5;
-            const dist = 30 + Math.random() * 45;
-            const target = new Vec3(
-                pos.x + Math.cos(angle) * dist,
-                pos.y + Math.sin(angle) * dist,
-                0,
-            );
-            const dur = 0.22 + Math.random() * 0.18;
-
-            const op = p.addComponent(UIOpacity);
-            op.opacity = 255;
-
-            tween(p)
-                .to(dur, { position: target })
-                .call(() => p.destroy())
-                .start();
-            tween(op)
-                .to(dur * 0.7, { opacity: 0 })
-                .start();
-        }
-    }
-
-    /** 播放 3x3 范围爆炸，并销毁逻辑层标记的目标方块节点。 */
-    private animateExplosions(events: ExplosionEvent[], moveVersion: number): number {
-        if (events.length === 0) return 0;
-
-        const removedIds = new Set<number>();
-        for (const event of events) {
-            const center = this.cellPos(event.center.row, event.center.col);
-            this.spawnExplosionParticles(center, event.value);
-            for (const id of event.targetIds) {
-                if (removedIds.has(id)) continue;
-                removedIds.add(id);
-
-                const tile = this.tileMap.get(id);
-                if (!tile) continue;
-                this.tileMap.delete(id);
-                tween(tile.node)
-                    .to(0.16, { scale: new Vec3(1.18, 1.18, 1) })
-                    .to(0.16, { scale: new Vec3(0, 0, 1) })
-                    .call(() => {
-                        if (moveVersion === this.moveVersion && tile.node.isValid) {
-                            tile.node.destroy();
-                        }
-                    })
-                    .start();
-            }
-        }
-        return 0.32;
-    }
-
-    /** 爆炸粒子：中心闪光 + 多方向彩色粒子。 */
-    private spawnExplosionParticles(pos: Vec3, value: number): void {
-        const flash = new Node('ExplosionFlash');
-        flash.layer = Layers.Enum.UI_2D;
-        flash.setPosition(pos.clone());
-        this.boardRoot.addChild(flash);
-        const flashGraphics = flash.addComponent(Graphics);
-        flashGraphics.circle(0, 0, 38);
-        flashGraphics.fillColor = new Color(255, 226, 120, 220);
-        flashGraphics.fill();
-        const flashOpacity = flash.addComponent(UIOpacity);
-        flashOpacity.opacity = 255;
-        tween(flash)
-            .to(0.3, { scale: new Vec3(2.1, 2.1, 1) })
-            .call(() => {
-                if (flash.isValid) flash.destroy();
-            })
-            .start();
-        tween(flashOpacity).to(0.3, { opacity: 0 }).start();
-
-        const count = Math.min(28, 16 + Math.floor(Math.log2(value)) * 2);
-        for (let i = 0; i < count; i++) {
-            const particle = new Node('Particle');
-            particle.layer = Layers.Enum.UI_2D;
-            particle.setPosition(pos.clone());
-            this.boardRoot.addChild(particle);
-
-            const graphics = particle.addComponent(Graphics);
-            const radius = 3 + Math.random() * 5;
-            graphics.circle(0, 0, radius);
-            graphics.fillColor = i % 2 === 0
-                ? new Color(255, 128, 48)
-                : new Color(255, 224, 92);
-            graphics.fill();
-
-            const angle = (Math.PI * 2 * i) / count + Math.random() * 0.3;
-            const distance = 75 + Math.random() * 95;
-            const target = new Vec3(
-                pos.x + Math.cos(angle) * distance,
-                pos.y + Math.sin(angle) * distance,
-                0,
-            );
-            const duration = 0.28 + Math.random() * 0.18;
-            const opacity = particle.addComponent(UIOpacity);
-            opacity.opacity = 255;
-            tween(particle)
-                .to(duration, { position: target, scale: new Vec3(0.2, 0.2, 1) })
-                .call(() => {
-                    if (particle.isValid) particle.destroy();
-                })
-                .start();
-            tween(opacity).to(duration * 0.75, { opacity: 0 }).start();
-        }
-    }
-
-    /** 合成时在目标位置弹出的分数上浮提示（参考原版 2048 score-addition） */
-    private spawnScorePopup(pos: Vec3, value: number): void {
-        const node = new Node('ScorePopup');
-        node.layer = Layers.Enum.UI_2D;
-        node.setPosition(pos.clone());
-        this.boardRoot.addChild(node);
-
-        const label = this.makeLabel(`+${value}`, 32, COLOR_TEXT_DARK, node, Vec3.ZERO);
-        label.fontSize = 32;
-
-        const op = node.addComponent(UIOpacity);
-        op.opacity = 255;
-
-        tween(node)
-            .to(0.55, { position: new Vec3(pos.x, pos.y + 70, 0) })
-            .call(() => node.destroy())
-            .start();
-        tween(op)
-            .delay(0.2)
-            .to(0.35, { opacity: 0 })
-            .start();
-    }
-
     private updateScore(): void {
-        const diffScore = this.board.score - this.lastScore;
-        if (diffScore > 0) {
-            const gainedCoins = SkinManager.instance.addCoinsFromScore(diffScore, this.difficulty);
-            // 称号 COIN_BONUS 金币加成（结算加成，仅作用于本局额外收益）
-            const multiplier = this.getEquippedCoinMultiplier();
-            const bonusCoins = Math.floor(gainedCoins * (multiplier - 1));
-            if (bonusCoins > 0) {
-                SkinManager.instance.addCoins(bonusCoins);
-                this.coinBonusEarnedThisGame += bonusCoins;
-            }
-            this.coinsEarnedThisGame += gainedCoins + bonusCoins;
-            this.lastScore = this.board.score;
-        } else if (this.board.score === 0) {
-            this.lastScore = 0;
-        }
+        this.economy.recordScore(this.board.score, this.difficulty);
         this.scoreLabel.string = String(this.board.score);
         if (this.board.score > this.bestScore) {
             this.bestScore = this.board.score;
@@ -2456,9 +966,7 @@ export class GameManager extends Component {
         if (this.coinLabel && this.coinLabel.isValid) {
             this.coinLabel.string = `🪙 ${SkinManager.instance.getCoins()}`;
         }
-        if (this.shopCoinsLabel && this.shopCoinsLabel.isValid) {
-            this.shopCoinsLabel.string = `当前金币: 🪙 ${SkinManager.instance.getCoins()}`;
-        }
+        this.shopView?.updateCoinsLabel();
     }
 
     private updateEnergy(energy: number, maxEnergy: number): void {
@@ -2725,108 +1233,73 @@ export class GameManager extends Component {
 
     // ==================== 弹窗 ====================
 
+    private async reviveGame(): Promise<boolean> {
+        const success = await AdManager.instance.showRewardedVideo('revive');
+        if (!success) {
+            this.showRewardedAdFailureToast();
+            return false;
+        }
+
+        this.hasRevivedThisGame = true;
+        const removed = this.board.removeSmallestTiles(5);
+        this.boardView.removeTilesAt(removed);
+        this.boardView.sync(this.board);
+        return true;
+    }
+
+    private async doubleCoinGame(): Promise<boolean> {
+        if (this.economy.getCoinsEarned() <= 0) return false;
+        const success = await AdManager.instance.showRewardedVideo('double_coin');
+        if (!success) {
+            this.showRewardedAdFailureToast();
+            return false;
+        }
+
+        this.economy.doubleReward();
+        const snapshot = this.economy.getSnapshot();
+        this.resultView.updateStats(
+            this.board?.score || 0,
+            snapshot.coinsEarned,
+            snapshot.coinBonusEarned,
+            snapshot.coinBonusRate,
+        );
+        this.updateCoinsLabel();
+        return true;
+    }
+
     private showOverlay(title: string, subtitle: string, isWin: boolean): void {
         if (this.resultOverlay.active) return;
         this.closeOtherOverlays(this.resultOverlay);
-        this.resultTitle.string = isWin ? '挑战完成' : '挑战结束';
-        this.resultSubtitle.string = `${subtitle}\n本局获得: 🪙 ${this.coinsEarnedThisGame}`;
-        this.updateResultStatLabels();
-        
-        this.buildResultAdButtons(!isWin && !this.hasRevivedThisGame);
-
-        this.resultOverlay.active = true;
-        const opacity = this.resultOverlay.getComponent(UIOpacity);
-        if (opacity) {
-            opacity.opacity = 0;
-            tween(opacity).to(0.25, { opacity: 255 }).start();
-        }
+        const snapshot = this.economy.getSnapshot();
+        this.resultView.updateStats(
+            this.board?.score || 0,
+            snapshot.coinsEarned,
+            snapshot.coinBonusEarned,
+            snapshot.coinBonusRate,
+        );
+        this.resultView.configureButtons(!isWin && !this.hasRevivedThisGame, snapshot.coinsEarned > 0);
+        this.resultView.show(isWin ? '挑战完成' : '挑战结束');
     }
 
-    private buildResultAdButtons(showRevive: boolean): void {
-        // 初始化复活按钮
-        if (!this.reviveButtonNode) {
-            this.reviveButtonNode = new Node('ReviveButton');
-            this.reviveButtonNode.layer = Layers.Enum.UI_2D;
-            this.resultOverlay.addChild(this.reviveButtonNode);
-            const trans = this.reviveButtonNode.addComponent(UITransform);
-            trans.setContentSize(200, 56);
-            this.makeLabel('🎬 观看广告复活', 20, COLOR_TEXT_LIGHT, this.reviveButtonNode, Vec3.ZERO);
-            
-            this.reviveButtonNode.on(Node.EventType.TOUCH_END, async () => {
-                const success = await AdManager.instance.showRewardedVideo('revive');
-                if (success) {
-                    this.hasRevivedThisGame = true;
-                    this.closeOverlay();
-                    const removed = this.board.removeSmallestTiles(5);
-                    // 刷新视图：移除对应的UI节点
-                    removed.forEach(pos => {
-                        const tileId = this.board.grid[pos.row][pos.col].id;
-                        // 因为 BoardLogic.removeSmallestTiles 直接把 grid 置空，没改 id。
-                        // 这里我们通过遍历所有现存的 tile 视图找到对应的移除
-                        this.tileMap.forEach((tv, id) => {
-                            if (tv.node.position.equals(this.cellPos(pos.row, pos.col))) {
-                                tv.node.destroy();
-                                this.tileMap.delete(id);
-                            }
-                        });
-                    });
-                } else {
-                    this.showRewardedAdFailureToast();
-                }
-            }, this);
-        }
-
-        // 初始化三倍收益按钮
-        if (!this.doubleCoinButtonNode) {
-            this.doubleCoinButtonNode = new Node('DoubleCoinButton');
-            this.doubleCoinButtonNode.layer = Layers.Enum.UI_2D;
-            this.resultOverlay.addChild(this.doubleCoinButtonNode);
-            const trans = this.doubleCoinButtonNode.addComponent(UITransform);
-            trans.setContentSize(200, 56);
-            this.makeLabel('🎬 收益 x3', 20, COLOR_TEXT_LIGHT, this.doubleCoinButtonNode, Vec3.ZERO);
-            
-            this.doubleCoinButtonNode.on(Node.EventType.TOUCH_END, async () => {
-                if (this.doubleCoinButtonNode!.active && this.coinsEarnedThisGame > 0) {
-                    const success = await AdManager.instance.showRewardedVideo('double_coin');
-                    if (success) {
-                        SkinManager.instance.addCoins(this.coinsEarnedThisGame * 2);
-                        this.doubleCoinButtonNode!.active = false; // 隐藏防多次点击
-                        this.resultSubtitle.string = this.resultSubtitle.string + '\n(已翻倍)';
-                        this.coinsEarnedThisGame *= 3;
-                        this.updateResultStatLabels();
-                        this.updateCoinsLabel();
-                    } else {
-                        this.showRewardedAdFailureToast();
-                    }
-                }
-            }, this);
-        }
-
-        // 控制显示
-        this.reviveButtonNode.active = showRevive;
-        this.doubleCoinButtonNode.active = this.coinsEarnedThisGame > 0;
-
-        this.styleResultButton(this.reviveButtonNode, '▶ 观看广告复活', COLOR_RESULT_BUTTON_PINK, COLOR_RESULT_BUTTON_PINK);
-        this.styleResultButton(this.doubleCoinButtonNode, '▶ 收益 x3', COLOR_RESULT_BUTTON_PINK, COLOR_RESULT_BUTTON_PINK);
-        this.styleResultButton(this.resultRestartButton, '再来一局', COLOR_RESULT_BUTTON_DARK, new Color(105, 105, 105));
-        this.layoutResultButtons();
-    }
-
-    private closeOverlay(): void {
-        this.resultOverlay.active = false;
+   private closeOverlay(): void {
+        this.resultView.hide();
     }
 
     /** 保证同一时间只有一个弹窗可见，并将当前弹窗置于最上层。 */
     private closeOtherOverlays(activeOverlay: Node): void {
         const overlays = [
-            this.shopOverlay,
-            this.titleOverlay,
+            this.shopView?.getOverlay(),
+            this.titleView?.getOverlay(),
             this.difficultyOverlay,
             this.resultOverlay,
         ];
         overlays.forEach((overlay) => {
             if (overlay && overlay !== activeOverlay && overlay.isValid) {
-                overlay.active = false;
+                if (overlay === this.resultOverlay) {
+                    this.resultView.hide();
+                } else {
+                    overlay.active = false;
+                }
             }
         });
         activeOverlay.setSiblingIndex(this.node.children.length - 1);
@@ -2834,8 +1307,8 @@ export class GameManager extends Component {
 
     private hasActiveModalOverlay(): boolean {
         return [
-            this.shopOverlay,
-            this.titleOverlay,
+            this.shopView?.getOverlay(),
+            this.titleView?.getOverlay(),
             this.difficultyOverlay,
             this.resultOverlay,
         ].some((overlay) => overlay && overlay.isValid && overlay.active);
@@ -2872,8 +1345,8 @@ export class GameManager extends Component {
      * @param leftX 文本左缘在父节点中的 x 坐标（默认 -240，与图鉴卡片一致）
      */
     private clampLabelToCard(label: Label, textWidth: number, leftX = -240): void {
-        const trans = label.node.getComponent(UITransform) || label.node.addComponent(UITransform);
-        trans.setContentSize(textWidth, label.lineHeight);
+        const trans = label.node.getComponent(UITransform);
+        if (trans) trans.setContentSize(textWidth, label.lineHeight);
         label.overflow = Label.Overflow.SHRINK;
         const pos = label.node.position;
         // 调用方传入的 x 是原左缘坐标（当前节点锚点 0.5），把中心移到 leftX + width/2 使左缘对齐
