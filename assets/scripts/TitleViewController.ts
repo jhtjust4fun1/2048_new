@@ -132,18 +132,19 @@ export class TitleViewController {
 
     private buildGachaTab(): void {
         const container = this.contentContainer!;
-        this.makeLabel(`🪙 ${SkinManager.instance.getCoins()}`, 22, new Color(215, 140, 0), container, new Vec3(0, 280, 0));
+        this.makeLabel(`🪙 ${SkinManager.instance.getCoins()}`, 24, new Color(215, 140, 0), container, new Vec3(0, 280, 0));
 
         const freeLeft = TitleManager.instance.getFreeAdLeftToday();
-        this.makeLabel(
+        const freeStatusLabel = this.makeLabel(
             `📺 免费抽：今日剩余 ${freeLeft} / ${TitleManager.instance.dailyFreeAdLimit} 次`,
-            18,
+            28,
             new Color(160, 150, 140),
             container,
             new Vec3(0, 240, 0),
         );
+        freeStatusLabel.isBold = true;
 
-        const singleBtn = this.createButton('SingleGacha', `抽 1 次 (${TitleManager.instance.gachaPrice}🪙)`, new Vec3(0, 180, 0), new Color(150, 110, 220), 200, 56);
+        const singleBtn = this.createButton('SingleGacha', `抽 1 次 (${TitleManager.instance.gachaPrice}🪙)`, new Vec3(0, 180, 0), new Color(150, 110, 220), 200, 56, container, 24);
         singleBtn.on(Node.EventType.TOUCH_END, () => {
             if (SkinManager.instance.getCoins() < TitleManager.instance.gachaPrice) {
                 this.callbacks.onToast('金币不足！');
@@ -155,7 +156,7 @@ export class TitleViewController {
             this.refresh();
         }, this);
 
-        const freeBtn = this.createButton('FreeAdGacha', freeLeft > 0 ? '🎬 免费广告抽' : '今日已用完', new Vec3(0, 110, 0), new Color(40, 160, 80), 200, 56);
+        const freeBtn = this.createButton('FreeAdGacha', freeLeft > 0 ? '🎬 免费广告抽' : '今日已用完', new Vec3(0, 110, 0), new Color(40, 160, 80), 200, 56, container, 24);
         freeBtn.on(Node.EventType.TOUCH_END, async () => {
             if (TitleManager.instance.getFreeAdLeftToday() <= 0) {
                 this.callbacks.onToast('今日免费次数已用完！');
@@ -174,7 +175,7 @@ export class TitleViewController {
         }, this);
 
         const tenCost = TitleManager.instance.gachaPrice * TitleManager.instance.gachaTenCount;
-        const tenBtn = this.createButton('TenGacha', `十连 (${tenCost}🪙)`, new Vec3(0, 40, 0), new Color(200, 120, 40), 200, 56);
+        const tenBtn = this.createButton('TenGacha', `十连 (${tenCost}🪙)`, new Vec3(0, 40, 0), new Color(200, 120, 40), 200, 56, container, 24);
         tenBtn.on(Node.EventType.TOUCH_END, () => {
             if (SkinManager.instance.getCoins() < tenCost) {
                 this.callbacks.onToast('金币不足！');
@@ -187,7 +188,7 @@ export class TitleViewController {
         }, this);
 
         const halfCost = Math.floor(tenCost / 2);
-        const adTenBtn = this.createButton('AdTenGacha', '🎬 广告十连半价', new Vec3(0, -30, 0), new Color(60, 140, 60), 200, 48);
+        const adTenBtn = this.createButton('AdTenGacha', '🎬 广告十连半价', new Vec3(0, -30, 0), new Color(60, 140, 60), 200, 48, container, 22);
         adTenBtn.on(Node.EventType.TOUCH_END, async () => {
             if (SkinManager.instance.getCoins() < halfCost) {
                 this.callbacks.onToast('金币不足！');
@@ -205,7 +206,16 @@ export class TitleViewController {
         }, this);
 
         const equipped = TitleManager.instance.getEquippedTitle();
-        if (equipped) this.makeLabel(`当前装备：${equipped.name}`, 18, new Color(100, 90, 80), container, new Vec3(0, -100, 0));
+        if (equipped) {
+            const equippedLabel = this.makeLabel(
+                `当前装备：${equipped.name}`,
+                28,
+                new Color(100, 90, 80),
+                container,
+                new Vec3(0, -100, 0),
+            );
+            equippedLabel.isBold = true;
+        }
     }
 
     private buildInventoryTab(): void {
@@ -368,6 +378,7 @@ export class TitleViewController {
         width: number,
         height: number,
         parent: Node = this.contentContainer!,
+        labelFontSize?: number,
     ): Node {
         const button = new Node(name);
         button.layer = Layers.Enum.UI_2D;
@@ -376,7 +387,15 @@ export class TitleViewController {
         const transform = button.addComponent(UITransform);
         transform.setContentSize(width, height);
         this.drawPanel(button, color, Math.min(10, height / 2));
-        this.makeLabel(text, Math.min(22, Math.max(16, height * 0.36)), COLOR_TEXT_LIGHT, button, Vec3.ZERO);
+        const label = this.makeLabel(
+            text,
+            labelFontSize ?? Math.min(22, Math.max(16, height * 0.36)),
+            COLOR_TEXT_LIGHT,
+            button,
+            Vec3.ZERO,
+        );
+        const labelTransform = label.node.getComponent(UITransform);
+        if (labelTransform) labelTransform.setContentSize(Math.max(1, width - 16), Math.max(1, height - 6));
         return button;
     }
 
@@ -414,6 +433,7 @@ export class TitleViewController {
         label.horizontalAlign = Label.HorizontalAlign.CENTER;
         label.verticalAlign = Label.VerticalAlign.CENTER;
         label.overflow = Label.Overflow.SHRINK;
+        label.enableWrapText = false;
         return label;
     }
 
@@ -421,6 +441,7 @@ export class TitleViewController {
         const transform = label.node.getComponent(UITransform);
         if (transform) transform.setContentSize(textWidth, label.lineHeight);
         label.overflow = Label.Overflow.SHRINK;
+        label.enableWrapText = false;
         const position = label.node.position;
         label.node.setPosition(leftX + textWidth / 2, position.y, position.z);
     }
